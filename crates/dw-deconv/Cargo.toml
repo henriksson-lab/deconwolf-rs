@@ -1,0 +1,20 @@
+[package]
+name = "dw-deconv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gpu = ["dw-gpu"]
+
+[dependencies]
+dw-core = { workspace = true }
+dw-fft = { workspace = true }
+dw-gpu = { workspace = true, optional = true }
+ndarray = { workspace = true }
+rayon = { workspace = true }
+num-complex = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+clap = { workspace = true }

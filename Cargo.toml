@@ -1,0 +1,43 @@
+[workspace]
+members = [
+    "crates/dw-core",
+    "crates/dw-fft",
+    "crates/dw-deconv",
+    "crates/dw-gpu",
+    "crates/dw-psf",
+    "crates/dw-kdtree",
+    "crates/dw-trafo",
+    "crates/dw-tools",
+    "crates/dw-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.5.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["Erik L. G. Wernersson"]
+
+[workspace.dependencies]
+# Internal crates
+dw-core = { path = "crates/dw-core" }
+dw-fft = { path = "crates/dw-fft" }
+dw-deconv = { path = "crates/dw-deconv" }
+dw-gpu = { path = "crates/dw-gpu" }
+dw-psf = { path = "crates/dw-psf" }
+dw-kdtree = { path = "crates/dw-kdtree" }
+dw-trafo = { path = "crates/dw-trafo" }
+dw-tools = { path = "crates/dw-tools" }
+
+# External dependencies
+ndarray = { version = "0.16", features = ["rayon"] }
+rayon = "1.10"
+num-complex = "0.4"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+tiff = "0.9"
+png = "0.17"
+rustfft = "6"
+log = "0.4"
+env_logger = "0.11"
+byteorder = "1"

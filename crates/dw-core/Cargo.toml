@@ -1,0 +1,17 @@
+[package]
+name = "dw-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ndarray = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true }
+tiff = { workspace = true }
+png = { workspace = true }
+log = { workspace = true }
+byteorder = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }

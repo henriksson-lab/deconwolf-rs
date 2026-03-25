@@ -1,0 +1,11 @@
+[package]
+name = "dw-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dw-core = { workspace = true }
+num-complex = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }

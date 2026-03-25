@@ -1,0 +1,18 @@
+[package]
+name = "dw-fft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["rustfft-backend"]
+rustfft-backend = ["rustfft"]
+fftw-backend = ["fftw"]
+
+[dependencies]
+num-complex = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+rustfft = { workspace = true, optional = true }
+fftw = { version = "0.8", optional = true }
