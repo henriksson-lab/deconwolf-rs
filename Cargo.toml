@@ -1,35 +1,20 @@
-[workspace]
-members = [
-    "crates/dw-core",
-    "crates/dw-fft",
-    "crates/dw-deconv",
-    "crates/dw-gpu",
-    "crates/dw-psf",
-    "crates/dw-kdtree",
-    "crates/dw-trafo",
-    "crates/dw-tools",
-    "crates/dw-cli",
-]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "deconwolf"
 version = "0.5.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["Erik L. G. Wernersson"]
+description = "3D deconvolution for fluorescence microscopy"
 
-[workspace.dependencies]
-# Internal crates
-dw-core = { path = "crates/dw-core" }
-dw-fft = { path = "crates/dw-fft" }
-dw-deconv = { path = "crates/dw-deconv" }
-dw-gpu = { path = "crates/dw-gpu" }
-dw-psf = { path = "crates/dw-psf" }
-dw-kdtree = { path = "crates/dw-kdtree" }
-dw-trafo = { path = "crates/dw-trafo" }
-dw-tools = { path = "crates/dw-tools" }
+[[bin]]
+name = "dw"
+path = "src/main.rs"
 
-# External dependencies
+[lib]
+name = "deconwolf"
+path = "src/lib.rs"
+
+[dependencies]
 ndarray = { version = "0.16", features = ["rayon"] }
 rayon = "1.10"
 num-complex = "0.4"

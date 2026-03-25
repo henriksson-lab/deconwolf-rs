@@ -62,19 +62,15 @@ dw npy2tif input.npy output.tif             # convert NumPy to TIFF
 | `-s, --tilesize` | — | Enable tiling with max tile size |
 | `--start` | `flat` | Initial guess: `flat`, `identity`, or `low-pass` |
 
-## Workspace structure
+## Source structure
 
-| Crate | Description |
-|-------|-------------|
-| `dw-core` | Image type (`FimImage`), image operations, TIFF/NPY I/O, tiling |
-| `dw-fft` | FFT abstraction with dual backend (rustfft / FFTW) |
-| `dw-deconv` | Deconvolution methods (RL, SHB), configuration, runner |
-| `dw-gpu` | OpenCL GPU acceleration (planned) |
-| `dw-psf` | PSF generation for widefield/confocal/STED (planned) |
-| `dw-kdtree` | 3D K-d tree (planned) |
-| `dw-trafo` | Random forest classifier (planned) |
-| `dw-tools` | Utility subcommands (maxproj, dots, nuclei, etc.) |
-| `dw-cli` | CLI entry point |
+| Module | Description |
+|--------|-------------|
+| `src/core/` | Image type (`FimImage`), image operations, TIFF/NPY I/O, tiling |
+| `src/fft/` | FFT abstraction with `RustFftBackend` (pure Rust, 3D via 1D decomposition) |
+| `src/deconv/` | Deconvolution methods (RL, SHB), configuration, runner |
+| `src/tools/` | Utility subcommands (maxproj, etc.) |
+| `src/main.rs` | CLI entry point (clap), produces `dw` binary |
 
 ## Running tests
 
