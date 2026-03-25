@@ -116,6 +116,170 @@ enum Commands {
         /// Extract specific slice instead of max projection
         #[arg(long)]
         slice: Option<usize>,
+
+        /// Create XY/XZ/YZ collage
+        #[arg(long)]
+        xyz: bool,
+
+        /// Extract most in-focus slice (gradient magnitude)
+        #[arg(long)]
+        gm: bool,
+    },
+
+    /// Merge TIFF slices into a 3D volume
+    Merge {
+        /// Output TIFF file
+        output: PathBuf,
+
+        /// Input TIFF files (one per z-slice)
+        inputs: Vec<PathBuf>,
+    },
+
+    /// Estimate background/vignetting from multiple images
+    Background {
+        /// Output background TIFF
+        #[arg(short, long)]
+        out: PathBuf,
+
+        /// Gaussian smoothing sigma (pixels)
+        #[arg(long, default_value = "100")]
+        sigma: f32,
+
+        /// Input TIFF files
+        inputs: Vec<PathBuf>,
+    },
+
+    /// Shift/translate a 3D image
+    Imshift {
+        /// Input TIFF file
+        input: PathBuf,
+
+        /// Output TIFF file
+        output: PathBuf,
+
+        /// Shift in X (pixels)
+        #[arg(long, default_value = "0", allow_hyphen_values = true)]
+        dx: f32,
+
+        /// Shift in Y (pixels)
+        #[arg(long, default_value = "0", allow_hyphen_values = true)]
+        dy: f32,
+
+        /// Shift in Z (pixels)
+        #[arg(long, default_value = "0", allow_hyphen_values = true)]
+        dz: f32,
+    },
+
+    /// Detect dots using Laplacian of Gaussian
+    Dots {
+        /// Input TIFF file
+        input: PathBuf,
+
+        /// Output TSV/CSV file
+        output: PathBuf,
+
+        /// Numerical aperture
+        #[arg(long)]
+        na: f64,
+
+        /// Refractive index
+        #[arg(long)]
+        ni: f64,
+
+        /// Emission wavelength (nm)
+        #[arg(long)]
+        lambda: f64,
+
+        /// Lateral pixel size (nm)
+        #[arg(long)]
+        dx: f64,
+
+        /// Axial pixel size (nm)
+        #[arg(long)]
+        dz: f64,
+
+        /// Number of dots to export
+        #[arg(long)]
+        ndots: Option<usize>,
+
+        /// Output CSV instead of TSV
+        #[arg(long)]
+        csv: bool,
+    },
+
+    /// Generate a PSF (Point Spread Function)
+    Psf {
+        /// Output TIFF file
+        output: PathBuf,
+
+        /// PSF type: widefield, confocal, or sted
+        #[arg(long, default_value = "widefield")]
+        psf_type: String,
+
+        /// Numerical aperture
+        #[arg(long)]
+        na: Option<f64>,
+
+        /// Refractive index
+        #[arg(long)]
+        ni: Option<f64>,
+
+        /// Emission wavelength (nm)
+        #[arg(long)]
+        lambda: Option<f64>,
+
+        /// Excitation wavelength (nm, for confocal)
+        #[arg(long)]
+        lambda2: Option<f64>,
+
+        /// Lateral pixel size (nm)
+        #[arg(long)]
+        dx: Option<f64>,
+
+        /// Axial pixel size (nm)
+        #[arg(long)]
+        dz: Option<f64>,
+
+        /// Lateral size (pixels, must be odd)
+        #[arg(long, default_value = "181")]
+        size: usize,
+
+        /// Number of Z-planes (must be odd)
+        #[arg(long, default_value = "181")]
+        nslice: usize,
+
+        /// Lateral FWHM in pixels (STED mode)
+        #[arg(long)]
+        lateral: Option<f64>,
+
+        /// Axial FWHM in pixels (STED mode)
+        #[arg(long)]
+        axial: Option<f64>,
+
+        /// Pinhole size in Airy Units (confocal)
+        #[arg(long, default_value = "1.0")]
+        pinhole: f64,
+    },
+
+    /// Sparse preprocessing (noise reduction)
+    Noise1 {
+        /// Input TIFF file
+        input: PathBuf,
+
+        /// Output TIFF file
+        output: PathBuf,
+
+        /// L1 sparsity penalty
+        #[arg(long, default_value = "0.1")]
+        lambda: f64,
+
+        /// Smoothness penalty
+        #[arg(long, default_value = "0.1")]
+        lambda_s: f64,
+
+        /// Number of iterations
+        #[arg(short = 'n', long, default_value = "10")]
+        iter: usize,
     },
 
     /// Convert TIFF to NumPy .npy format
@@ -186,13 +350,81 @@ fn main() {
             deconwolf::deconv::runner::dw_run::<RustFftBackend>(&opts)
         }
 
-        Commands::Maxproj { input, output, slice } => {
+        Commands::Maxproj { input, output, slice, xyz, gm } => {
             let mode = if let Some(z) = slice {
                 deconwolf::tools::maxproj::MaxProjMode::Slice(z)
+            } else if xyz {
+                deconwolf::tools::maxproj::MaxProjMode::Xyz
+            } else if gm {
+                deconwolf::tools::maxproj::MaxProjMode::GradientMagnitude
             } else {
                 deconwolf::tools::maxproj::MaxProjMode::Max
             };
             deconwolf::tools::maxproj::run_maxproj(&input, &output, mode)
+        }
+
+        Commands::Merge { output, inputs } => {
+            deconwolf::tools::merge::run_merge(&output, &inputs)
+        }
+
+        Commands::Background { out, sigma, inputs } => {
+            deconwolf::tools::background::run_background(&out, &inputs, sigma)
+        }
+
+        Commands::Imshift { input, output, dx, dy, dz } => {
+            deconwolf::tools::imshift::run_imshift(&input, &output, dx, dy, dz)
+        }
+
+        Commands::Dots { input, output, na, ni, lambda, dx, dz, ndots, csv } => {
+            deconwolf::tools::dots::run_dots(&input, &output, na, ni, lambda, dx, dz, ndots, csv)
+        }
+
+        Commands::Psf {
+            output, psf_type, na, ni, lambda, lambda2, dx, dz,
+            size, nslice, lateral, axial, pinhole,
+        } => {
+            match psf_type.as_str() {
+                "sted" => {
+                    let lat = lateral.unwrap_or(2.0);
+                    let ax = axial.unwrap_or(4.0);
+                    match deconwolf::tools::psf::generate_sted_psf(lat, ax, size, nslice) {
+                        Ok(img) => deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None),
+                        Err(e) => Err(e),
+                    }
+                }
+                "confocal" => {
+                    let na = na.unwrap_or(1.4);
+                    let ni = ni.unwrap_or(1.515);
+                    let lam = lambda.unwrap_or(525.0);
+                    let lam2 = lambda2.unwrap_or(488.0);
+                    let pixel_dx = dx.unwrap_or(65.0);
+                    let pixel_dz = dz.unwrap_or(200.0);
+                    match deconwolf::tools::psf::generate_confocal_psf(
+                        na, ni, lam, lam2, pixel_dx, pixel_dz, size, nslice, pinhole,
+                    ) {
+                        Ok(img) => deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None),
+                        Err(e) => Err(e),
+                    }
+                }
+                _ => {
+                    // widefield (default)
+                    let na = na.unwrap_or(1.4);
+                    let ni = ni.unwrap_or(1.515);
+                    let lam = lambda.unwrap_or(525.0);
+                    let pixel_dx = dx.unwrap_or(65.0);
+                    let pixel_dz = dz.unwrap_or(200.0);
+                    match deconwolf::tools::psf::generate_widefield_psf(
+                        na, ni, lam, pixel_dx, pixel_dz, size, nslice,
+                    ) {
+                        Ok(img) => deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None),
+                        Err(e) => Err(e),
+                    }
+                }
+            }
+        }
+
+        Commands::Noise1 { input, output, lambda, lambda_s, iter } => {
+            deconwolf::tools::sparse::run_sparse(&input, &output, lambda, lambda_s, iter)
         }
 
         Commands::Tif2npy { input, output } => {

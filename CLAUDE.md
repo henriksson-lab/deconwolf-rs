@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Deconwolf is a deconvolution tool for 3D fluorescence microscopy images, published in Nature Methods 2024. This repository contains both:
-- **Rust port** (active development) — single crate at the repo root
+- **Rust port** (active development) — single crate at the repo root, ~7200 LOC
 - **C reference** (`deconwolf/`) — Original ~31K LOC C implementation, kept for reference
 
 ## Build Commands
@@ -13,7 +13,7 @@ Deconwolf is a deconvolution tool for 3D fluorescence microscopy images, publish
 ```bash
 cargo build              # debug build
 cargo build --release    # release build
-cargo test               # run all 27 tests
+cargo test               # run all 57 tests
 cargo run -- --help      # run the CLI
 cargo run -- deconvolve image.tif psf.tif  # run deconvolution
 ```
@@ -25,20 +25,20 @@ src/
   lib.rs              # crate root: pub mod core, fft, deconv, tools
   main.rs             # CLI entry point (clap), produces `dw` binary
   core/
-    mod.rs            # re-exports FimImage, DwError, Result
     image.rs          # FimImage: wraps ndarray::Array3<f32>, shape [P,N,M]
-    image_ops.rs      # min/max/sum/mean/std/percentile, projections, Anscombe, etc.
+    image_ops.rs      # Gaussian smoothing, LoG, convolution, projections, statistics
     tiff_io.rs        # TIFF read/write (u8/u16/f32), ImageJ metadata
     npy_io.rs         # NumPy .npy read/write
     tiling.rs         # tile decomposition with weighted blending
+    ftab.rs           # floating-point table with TSV/CSV I/O
+    kdtree.rs         # 3D K-d tree (k-NN, radius queries, KDE)
+    trafo.rs          # random forest classifier (gini/entropy splitting)
     error.rs          # DwError enum, Result type alias
   fft/
-    mod.rs            # re-exports FftBackend, FftContext
     backend.rs        # FftBackend trait, FftContext<B> with convolve/convolve_conj
     rustfft_backend.rs # 3D real-to-complex via composed 1D FFTs (default)
     complex_ops.rs    # element-wise complex multiply/conj
   deconv/
-    mod.rs            # re-exports DwOpts, DeconvMethod
     config.rs         # DwOpts config struct, Method/Metric/IterType enums
     method.rs         # DeconvMethod trait
     identity.rs       # pass-through method (testing)
@@ -46,9 +46,15 @@ src/
     shb.rs            # Scaled Heavy Ball (default, Nesterov momentum)
     boundary.rs       # Bertero boundary weights
     iterator.rs       # convergence control (fixed/relative/absolute)
-    runner.rs         # dw_run() orchestration: load → preprocess → deconvolve → write
+    runner.rs         # dw_run() orchestration: load -> preprocess -> deconvolve -> write
   tools/
-    maxproj.rs        # max Z-projection, slice extraction
+    maxproj.rs        # max Z-projection, XYZ collage, gradient magnitude focus
+    merge.rs          # merge 2D TIFF slices into 3D volume
+    background.rs     # background/vignetting estimation via averaging + Gaussian
+    imshift.rs        # image translation with trilinear interpolation
+    dots.rs           # dot detection via LoG filtering + local maxima
+    psf.rs            # PSF generation (widefield Born-Wolf, confocal, STED)
+    sparse.rs         # sparse preprocessing / noise reduction (L1 + TV)
 ```
 
 ## Architecture
@@ -64,6 +70,10 @@ src/
 
 ### Parallelism
 `rayon` replaces OpenMP. Elementwise operations use `par_iter_mut()`.
+
+## CLI Subcommands
+
+`deconvolve`, `maxproj`, `merge`, `background`, `imshift`, `dots`, `psf`, `noise1`, `tif2npy`, `npy2tif`
 
 ## C Reference Build (in `deconwolf/`)
 
