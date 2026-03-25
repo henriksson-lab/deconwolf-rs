@@ -5,3 +5,5 @@ pub mod imshift;
 pub mod dots;
 pub mod sparse;
 pub mod psf;
+pub mod nuclei;
+pub mod align_dots;

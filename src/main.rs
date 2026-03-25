@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use deconwolf::deconv::config;
+#[cfg(not(feature = "fftw-backend"))]
 use deconwolf::fft::rustfft_backend::RustFftBackend;
+#[cfg(feature = "fftw-backend")]
+use deconwolf::fft::fftw_backend::FftwBackend;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -103,6 +106,70 @@ enum Commands {
         /// Tile overlap padding
         #[arg(short = 'p', long, default_value = "20")]
         tilepad: usize,
+
+        /// Flat-field correction image
+        #[arg(short = 'C', long)]
+        flatfield: Option<PathBuf>,
+
+        /// Pre-filter with Gaussian (Anscombe-transformed)
+        #[arg(short = 'Q', long)]
+        psigma: Option<f32>,
+
+        /// Reference image for benchmarking
+        #[arg(short = 'R', long)]
+        reference: Option<PathBuf>,
+
+        /// Write diagnostics to TSV file
+        #[arg(short = 'd', long)]
+        tsv: Option<PathBuf>,
+
+        /// Dump each iteration to file
+        #[arg(short = 'i', long)]
+        iterdump: bool,
+
+        /// Dump every Nth iteration
+        #[arg(short = 'I', long)]
+        niterdump: Option<usize>,
+
+        /// Absolute error threshold for stopping
+        #[arg(short = 'e', long)]
+        abserror: Option<f64>,
+
+        /// Maximum alpha parameter (SHB momentum)
+        #[arg(long, default_value = "1.0")]
+        alphamax: f32,
+
+        /// Show detailed timings
+        #[arg(short = 'g', long)]
+        times: bool,
+
+        /// Use FFTW_ESTIMATE instead of FFTW_MEASURE
+        #[arg(short = 'a', long)]
+        noplan: bool,
+
+        /// Disable in-place FFTs
+        #[arg(long)]
+        no_inplace: bool,
+
+        /// Periodic boundary (equivalent to --bq 0)
+        #[arg(short = 'O', long)]
+        periodic: bool,
+
+        /// Use N pixels larger job size for FFT optimization
+        #[arg(short = 'L', long, default_value = "0")]
+        lookahead: usize,
+
+        /// Folder for temporary tiling files
+        #[arg(short = 'u', long)]
+        tempdir: Option<PathBuf>,
+
+        /// Enable GPU processing
+        #[arg(short = 'G', long)]
+        gpu: bool,
+
+        /// Select OpenCL device number
+        #[arg(long, default_value = "0")]
+        cldevice: usize,
     },
 
     /// Maximum Z-projection
@@ -282,6 +349,61 @@ enum Commands {
         iter: usize,
     },
 
+    /// Nuclei pixel classification using random forest
+    Nuclei {
+        /// Mode: fit (train) or classify (predict)
+        #[arg(long, default_value = "classify")]
+        mode: String,
+
+        /// Input image (TIFF)
+        #[arg(long)]
+        image: PathBuf,
+
+        /// Annotation image for training (TIFF with class labels)
+        #[arg(long)]
+        annotation: Option<PathBuf>,
+
+        /// Model file (output for fit, input for classify)
+        #[arg(long)]
+        model: PathBuf,
+
+        /// Output classified image (classify mode)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+
+        /// Number of trees
+        #[arg(long, default_value = "50")]
+        ntree: usize,
+
+        /// Feature sigmas (comma-separated)
+        #[arg(long, default_value = "1.0,2.0,4.0")]
+        sigmas: String,
+    },
+
+    /// Align 3D point clouds between two images
+    AlignDots {
+        /// First dot file (TSV)
+        dots1: PathBuf,
+
+        /// Second dot file (TSV)
+        dots2: PathBuf,
+
+        /// Output alignment file (TSV)
+        output: PathBuf,
+
+        /// KDE bandwidth
+        #[arg(long, default_value = "0.4")]
+        sigma: f64,
+
+        /// Maximum shift to search (pixels)
+        #[arg(long, default_value = "4.0")]
+        capture_distance: f64,
+
+        /// Maximum points to use
+        #[arg(long, default_value = "250")]
+        npoint: usize,
+    },
+
     /// Convert TIFF to NumPy .npy format
     Tif2npy {
         /// Input TIFF file
@@ -310,7 +432,10 @@ fn main() {
         Commands::Deconvolve {
             image, psf, out, method, iter, maxiter, relerror, metric, format,
             scaling, bq, bg, offset, threads, verbose, cz, az, prefix,
-            overwrite, start, tilesize, tilepad,
+            overwrite, start, tilesize, tilepad, flatfield, psigma,
+            reference, tsv, iterdump, niterdump, abserror, alphamax,
+            times, noplan, no_inplace, periodic, lookahead, tempdir,
+            gpu, cldevice,
         } => {
             let mut opts = config::DwOpts::default();
             opts.image_file = image;
@@ -320,7 +445,7 @@ fn main() {
             opts.metric = metric;
             opts.start_condition = start;
             opts.output_format = format;
-            opts.border_quality = bq;
+            opts.border_quality = if periodic { 0 } else { bq };
             opts.bg = bg;
             opts.offset = offset;
             opts.verbosity = verbose;
@@ -331,7 +456,32 @@ fn main() {
             opts.max_iter = maxiter;
             opts.rel_error = relerror;
             opts.tiling_padding = tilepad;
+            opts.flatfield_file = flatfield;
+            opts.ref_file = reference;
+            opts.tsv_file = tsv;
+            opts.iter_dump = iterdump;
+            opts.alpha_max = alphamax;
+            opts.show_time = times;
+            opts.fft_inplace = !no_inplace;
+            opts.lookahead = lookahead;
+            opts.temp_folder = tempdir;
+            opts.gpu = gpu;
+            opts.cl_device = cldevice;
 
+            if let Some(ps) = psigma {
+                opts.psigma = ps;
+            }
+            if let Some(nd) = niterdump {
+                opts.n_iter_dump = nd;
+                opts.iter_dump = true;
+            }
+            if let Some(ae) = abserror {
+                opts.abs_error = ae;
+                opts.iter_type = config::IterType::Absolute;
+            }
+            if noplan {
+                opts.fftw_planning = 64; // FFTW_ESTIMATE
+            }
             if let Some(n) = iter {
                 opts.n_iter = n;
                 opts.iter_type = config::IterType::Fixed;
@@ -347,7 +497,14 @@ fn main() {
                 opts.tiling_max_size = ts as i64;
             }
 
-            deconwolf::deconv::runner::dw_run::<RustFftBackend>(&opts)
+            #[cfg(not(feature = "fftw-backend"))]
+            {
+                deconwolf::deconv::runner::dw_run::<RustFftBackend>(&opts)
+            }
+            #[cfg(feature = "fftw-backend")]
+            {
+                deconwolf::deconv::runner::dw_run::<FftwBackend>(&opts)
+            }
         }
 
         Commands::Maxproj { input, output, slice, xyz, gm } => {
@@ -425,6 +582,46 @@ fn main() {
 
         Commands::Noise1 { input, output, lambda, lambda_s, iter } => {
             deconwolf::tools::sparse::run_sparse(&input, &output, lambda, lambda_s, iter)
+        }
+
+        Commands::Nuclei { mode, image, annotation, model, out, ntree, sigmas } => {
+            let sigma_vec: Vec<f32> = sigmas
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            let sigma_slice = if sigma_vec.is_empty() {
+                deconwolf::tools::nuclei::default_sigmas()
+            } else {
+                sigma_vec
+            };
+            match mode.as_str() {
+                "fit" => {
+                    match annotation {
+                        Some(anno) => deconwolf::tools::nuclei::run_nuclei_fit(
+                            &image, &anno, &model, ntree, &sigma_slice,
+                        ),
+                        None => Err(deconwolf::core::DwError::Config(
+                            "--annotation required for fit mode".into(),
+                        )),
+                    }
+                }
+                _ => {
+                    match out {
+                        Some(output) => deconwolf::tools::nuclei::run_nuclei_classify(
+                            &image, &model, &output, &sigma_slice,
+                        ),
+                        None => Err(deconwolf::core::DwError::Config(
+                            "--out required for classify mode".into(),
+                        )),
+                    }
+                }
+            }
+        }
+
+        Commands::AlignDots { dots1, dots2, output, sigma, capture_distance, npoint } => {
+            deconwolf::tools::align_dots::run_align_dots(
+                &dots1, &dots2, sigma, capture_distance, npoint, &output,
+            )
         }
 
         Commands::Tif2npy { input, output } => {

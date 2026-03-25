@@ -28,5 +28,10 @@ env_logger = "0.11"
 byteorder = "1"
 rand = "0.8"
 
+[features]
+default = []
+fftw-backend = []
+gpu = []
+
 [dev-dependencies]
 tempfile = "3"
