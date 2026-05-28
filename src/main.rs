@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use deconwolf::deconv::config;
-#[cfg(not(feature = "fftw-backend"))]
-use deconwolf::fft::rustfft_backend::RustFftBackend;
 #[cfg(feature = "fftw-backend")]
 use deconwolf::fft::fftw_backend::FftwBackend;
+#[cfg(not(feature = "fftw-backend"))]
+use deconwolf::fft::rustfft_backend::RustFftBackend;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -430,43 +430,77 @@ fn main() {
 
     let result = match cli.command {
         Commands::Deconvolve {
-            image, psf, out, method, iter, maxiter, relerror, metric, format,
-            scaling, bq, bg, offset, threads, verbose, cz, az, prefix,
-            overwrite, start, tilesize, tilepad, flatfield, psigma,
-            reference, tsv, iterdump, niterdump, abserror, alphamax,
-            times, noplan, no_inplace, periodic, lookahead, tempdir,
-            gpu, cldevice,
+            image,
+            psf,
+            out,
+            method,
+            iter,
+            maxiter,
+            relerror,
+            metric,
+            format,
+            scaling,
+            bq,
+            bg,
+            offset,
+            threads,
+            verbose,
+            cz,
+            az,
+            prefix,
+            overwrite,
+            start,
+            tilesize,
+            tilepad,
+            flatfield,
+            psigma,
+            reference,
+            tsv,
+            iterdump,
+            niterdump,
+            abserror,
+            alphamax,
+            times,
+            noplan,
+            no_inplace,
+            periodic,
+            lookahead,
+            tempdir,
+            gpu,
+            cldevice,
         } => {
-            let mut opts = config::DwOpts::default();
-            opts.image_file = image;
-            opts.psf_file = psf;
-            opts.out_file = out;
-            opts.method = method;
-            opts.metric = metric;
-            opts.start_condition = start;
-            opts.output_format = format;
-            opts.border_quality = if periodic { 0 } else { bq };
-            opts.bg = bg;
-            opts.offset = offset;
-            opts.verbosity = verbose;
-            opts.zcrop = cz;
-            opts.auto_zcrop = az;
-            opts.prefix = prefix;
-            opts.overwrite = overwrite;
-            opts.max_iter = maxiter;
-            opts.rel_error = relerror;
-            opts.tiling_padding = tilepad;
-            opts.flatfield_file = flatfield;
-            opts.ref_file = reference;
-            opts.tsv_file = tsv;
-            opts.iter_dump = iterdump;
-            opts.alpha_max = alphamax;
-            opts.show_time = times;
-            opts.fft_inplace = !no_inplace;
-            opts.lookahead = lookahead;
-            opts.temp_folder = tempdir;
-            opts.gpu = gpu;
-            opts.cl_device = cldevice;
+            let mut opts = config::DwOpts {
+                image_file: image,
+                psf_file: psf,
+                out_file: out,
+                method,
+                metric,
+                start_condition: start,
+                output_format: format,
+                border_quality: if periodic { 0 } else { bq },
+                bg,
+                offset,
+                verbosity: verbose,
+                zcrop: cz,
+                auto_zcrop: az,
+                prefix,
+                overwrite,
+                max_iter: maxiter,
+                rel_error: relerror,
+                tiling_padding: tilepad,
+                flatfield_file: flatfield,
+                ref_file: reference,
+                tsv_file: tsv,
+                iter_dump: iterdump,
+                alpha_max: alphamax,
+                show_time: times,
+                fft_inplace: !no_inplace,
+                lookahead,
+                temp_folder: tempdir,
+                gpu,
+                cl_device: cldevice,
+                ..config::DwOpts::default()
+            };
 
             if let Some(ps) = psigma {
                 opts.psigma = ps;
@@ -507,7 +541,13 @@ fn main() {
             }
         }
 
-        Commands::Maxproj { input, output, slice, xyz, gm } => {
+        Commands::Maxproj {
+            input,
+            output,
+            slice,
+            xyz,
+            gm,
+        } => {
             let mode = if let Some(z) = slice {
                 deconwolf::tools::maxproj::MaxProjMode::Slice(z)
             } else if xyz {
@@ -520,125 +560,212 @@ fn main() {
             deconwolf::tools::maxproj::run_maxproj(&input, &output, mode)
         }
 
-        Commands::Merge { output, inputs } => {
-            deconwolf::tools::merge::run_merge(&output, &inputs)
-        }
+        Commands::Merge { output, inputs } => deconwolf::tools::merge::run_merge(&output, &inputs),
 
         Commands::Background { out, sigma, inputs } => {
             deconwolf::tools::background::run_background(&out, &inputs, sigma)
         }
 
-        Commands::Imshift { input, output, dx, dy, dz } => {
-            deconwolf::tools::imshift::run_imshift(&input, &output, dx, dy, dz)
-        }
+        Commands::Imshift {
+            input,
+            output,
+            dx,
+            dy,
+            dz,
+        } => deconwolf::tools::imshift::run_imshift(&input, &output, dx, dy, dz),
 
-        Commands::Dots { input, output, na, ni, lambda, dx, dz, ndots, csv } => {
-            deconwolf::tools::dots::run_dots(&input, &output, na, ni, lambda, dx, dz, ndots, csv)
-        }
+        Commands::Dots {
+            input,
+            output,
+            na,
+            ni,
+            lambda,
+            dx,
+            dz,
+            ndots,
+            csv,
+        } => deconwolf::tools::dots::run_dots(&input, &output, na, ni, lambda, dx, dz, ndots, csv),
 
         Commands::Psf {
-            output, psf_type, na, ni, lambda, lambda2, dx, dz,
-            size, nslice, lateral, axial, pinhole,
-        } => {
-            match psf_type.as_str() {
-                "sted" => {
-                    let lat = lateral.unwrap_or(2.0);
-                    let ax = axial.unwrap_or(4.0);
-                    match deconwolf::tools::psf::generate_sted_psf(lat, ax, size, nslice) {
-                        Ok(img) => deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None),
-                        Err(e) => Err(e),
-                    }
-                }
-                "confocal" => {
-                    let na = na.unwrap_or(1.4);
-                    let ni = ni.unwrap_or(1.515);
-                    let lam = lambda.unwrap_or(525.0);
-                    let lam2 = lambda2.unwrap_or(488.0);
-                    let pixel_dx = dx.unwrap_or(65.0);
-                    let pixel_dz = dz.unwrap_or(200.0);
-                    match deconwolf::tools::psf::generate_confocal_psf(
-                        na, ni, lam, lam2, pixel_dx, pixel_dz, size, nslice, pinhole,
-                    ) {
-                        Ok(img) => deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None),
-                        Err(e) => Err(e),
-                    }
-                }
-                _ => {
-                    // widefield (default)
-                    let na = na.unwrap_or(1.4);
-                    let ni = ni.unwrap_or(1.515);
-                    let lam = lambda.unwrap_or(525.0);
-                    let pixel_dx = dx.unwrap_or(65.0);
-                    let pixel_dz = dz.unwrap_or(200.0);
-                    match deconwolf::tools::psf::generate_widefield_psf(
-                        na, ni, lam, pixel_dx, pixel_dz, size, nslice,
-                    ) {
-                        Ok(img) => deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None),
-                        Err(e) => Err(e),
-                    }
+            output,
+            psf_type,
+            na,
+            ni,
+            lambda,
+            lambda2,
+            dx,
+            dz,
+            size,
+            nslice,
+            lateral,
+            axial,
+            pinhole,
+        } => match psf_type.as_str() {
+            "sted" => {
+                let lat = lateral.unwrap_or(2.0);
+                let ax = axial.unwrap_or(4.0);
+                match deconwolf::tools::psf::generate_sted_psf(lat, ax, size, nslice) {
+                    Ok(img) => deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None),
+                    Err(e) => Err(e),
                 }
             }
-        }
+            "confocal" => {
+                let na = na.unwrap_or(1.4);
+                let ni = ni.unwrap_or(1.515);
+                let lam = lambda.unwrap_or(525.0);
+                let lam2 = lambda2.unwrap_or(488.0);
+                let pixel_dx = dx.unwrap_or(65.0);
+                let pixel_dz = dz.unwrap_or(200.0);
+                match deconwolf::tools::psf::generate_confocal_psf(
+                    na, ni, lam, lam2, pixel_dx, pixel_dz, size, nslice, pinhole,
+                ) {
+                    Ok(img) => deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None),
+                    Err(e) => Err(e),
+                }
+            }
+            "widefield" => {
+                let na = na.unwrap_or(1.4);
+                let ni = ni.unwrap_or(1.515);
+                let lam = lambda.unwrap_or(525.0);
+                let pixel_dx = dx.unwrap_or(65.0);
+                let pixel_dz = dz.unwrap_or(200.0);
+                match deconwolf::tools::psf::generate_widefield_psf(
+                    na, ni, lam, pixel_dx, pixel_dz, size, nslice,
+                ) {
+                    Ok(img) => deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None),
+                    Err(e) => Err(e),
+                }
+            }
+            _ => Err(deconwolf::core::DwError::Config(format!(
+                "Unknown PSF type '{}'; expected widefield, confocal, or sted",
+                psf_type
+            ))),
+        },
 
-        Commands::Noise1 { input, output, lambda, lambda_s, iter } => {
-            deconwolf::tools::sparse::run_sparse(&input, &output, lambda, lambda_s, iter)
-        }
+        Commands::Noise1 {
+            input,
+            output,
+            lambda,
+            lambda_s,
+            iter,
+        } => deconwolf::tools::sparse::run_sparse(&input, &output, lambda, lambda_s, iter),
 
-        Commands::Nuclei { mode, image, annotation, model, out, ntree, sigmas } => {
-            let sigma_vec: Vec<f32> = sigmas
-                .split(',')
-                .filter_map(|s| s.trim().parse().ok())
-                .collect();
-            let sigma_slice = if sigma_vec.is_empty() {
-                deconwolf::tools::nuclei::default_sigmas()
-            } else {
-                sigma_vec
+        Commands::Nuclei {
+            mode,
+            image,
+            annotation,
+            model,
+            out,
+            ntree,
+            sigmas,
+        } => {
+            let sigma_slice = match parse_sigmas(&sigmas) {
+                Ok(s) => s,
+                Err(e) => exit_with_error(e),
             };
             match mode.as_str() {
-                "fit" => {
-                    match annotation {
-                        Some(anno) => deconwolf::tools::nuclei::run_nuclei_fit(
-                            &image, &anno, &model, ntree, &sigma_slice,
-                        ),
-                        None => Err(deconwolf::core::DwError::Config(
-                            "--annotation required for fit mode".into(),
-                        )),
-                    }
-                }
-                _ => {
-                    match out {
-                        Some(output) => deconwolf::tools::nuclei::run_nuclei_classify(
-                            &image, &model, &output, &sigma_slice,
-                        ),
-                        None => Err(deconwolf::core::DwError::Config(
-                            "--out required for classify mode".into(),
-                        )),
-                    }
-                }
+                "fit" => match annotation {
+                    Some(anno) => deconwolf::tools::nuclei::run_nuclei_fit(
+                        &image,
+                        &anno,
+                        &model,
+                        ntree,
+                        &sigma_slice,
+                    ),
+                    None => Err(deconwolf::core::DwError::Config(
+                        "--annotation required for fit mode".into(),
+                    )),
+                },
+                "classify" => match out {
+                    Some(output) => deconwolf::tools::nuclei::run_nuclei_classify(
+                        &image,
+                        &model,
+                        &output,
+                        &sigma_slice,
+                    ),
+                    None => Err(deconwolf::core::DwError::Config(
+                        "--out required for classify mode".into(),
+                    )),
+                },
+                _ => Err(deconwolf::core::DwError::Config(format!(
+                    "Unknown nuclei mode '{}'; expected fit or classify",
+                    mode
+                ))),
             }
         }
 
-        Commands::AlignDots { dots1, dots2, output, sigma, capture_distance, npoint } => {
-            deconwolf::tools::align_dots::run_align_dots(
-                &dots1, &dots2, sigma, capture_distance, npoint, &output,
-            )
-        }
+        Commands::AlignDots {
+            dots1,
+            dots2,
+            output,
+            sigma,
+            capture_distance,
+            npoint,
+        } => deconwolf::tools::align_dots::run_align_dots(
+            &dots1,
+            &dots2,
+            sigma,
+            capture_distance,
+            npoint,
+            &output,
+        ),
 
-        Commands::Tif2npy { input, output } => {
-            deconwolf::core::tiff_io::tiff_read(&input).and_then(|(img, _)| {
-                deconwolf::core::npy_io::npy_write(&output, &img)
-            })
-        }
+        Commands::Tif2npy { input, output } => deconwolf::core::tiff_io::tiff_read(&input)
+            .and_then(|(img, _)| deconwolf::core::npy_io::npy_write(&output, &img)),
 
-        Commands::Npy2tif { input, output } => {
-            deconwolf::core::npy_io::npy_read(&input).and_then(|img| {
-                deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None)
-            })
-        }
+        Commands::Npy2tif { input, output } => deconwolf::core::npy_io::npy_read(&input)
+            .and_then(|img| deconwolf::core::tiff_io::tiff_write_f32(&output, &img, None)),
     };
 
     if let Err(e) = result {
         log::error!("{}", e);
         std::process::exit(1);
+    }
+}
+
+fn parse_sigmas(sigmas: &str) -> Result<Vec<f32>, deconwolf::core::DwError> {
+    let mut parsed = Vec::new();
+    for raw in sigmas.split(',') {
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let sigma = value.parse::<f32>().map_err(|_| {
+            deconwolf::core::DwError::Config(format!("Invalid sigma value: {}", value))
+        })?;
+        if !sigma.is_finite() || sigma <= 0.0 {
+            return Err(deconwolf::core::DwError::Config(format!(
+                "Sigma values must be positive and finite: {}",
+                value
+            )));
+        }
+        parsed.push(sigma);
+    }
+    if parsed.is_empty() {
+        Ok(deconwolf::tools::nuclei::default_sigmas())
+    } else {
+        Ok(parsed)
+    }
+}
+
+fn exit_with_error(e: deconwolf::core::DwError) -> ! {
+    log::error!("{}", e);
+    std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_sigmas_rejects_invalid_values() {
+        assert_eq!(parse_sigmas("1.0, 2.5").unwrap(), vec![1.0, 2.5]);
+        assert!(parse_sigmas("1.0,nope").is_err());
+        assert!(parse_sigmas("0").is_err());
+        assert!(parse_sigmas("NaN").is_err());
+        assert_eq!(
+            parse_sigmas("").unwrap(),
+            deconwolf::tools::nuclei::default_sigmas()
+        );
     }
 }

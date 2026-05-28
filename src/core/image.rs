@@ -29,10 +29,11 @@ impl FimImage {
     /// Create from a flat f32 slice in row-major order (M stride-1).
     /// The slice length must equal m * n * p.
     pub fn from_slice(m: usize, n: usize, p: usize, data: &[f32]) -> Result<Self> {
-        if data.len() != m * n * p {
+        let expected = checked_len(m, n, p)?;
+        if data.len() != expected {
             return Err(DwError::InvalidDimensions(format!(
                 "Expected {} elements, got {}",
-                m * n * p,
+                expected,
                 data.len()
             )));
         }
@@ -43,10 +44,11 @@ impl FimImage {
 
     /// Create from an owned Vec<f32>.
     pub fn from_vec(m: usize, n: usize, p: usize, data: Vec<f32>) -> Result<Self> {
-        if data.len() != m * n * p {
+        let expected = checked_len(m, n, p)?;
+        if data.len() != expected {
             return Err(DwError::InvalidDimensions(format!(
                 "Expected {} elements, got {}",
-                m * n * p,
+                expected,
                 data.len()
             )));
         }
@@ -128,9 +130,7 @@ impl FimImage {
         }
         let slice = self.data.index_axis(ndarray::Axis(0), plane);
         let mut out = FimImage::zeros(self.m(), self.n(), 1);
-        out.data
-            .index_axis_mut(ndarray::Axis(0), 0)
-            .assign(&slice);
+        out.data.index_axis_mut(ndarray::Axis(0), 0).assign(&slice);
         Ok(out)
     }
 
@@ -162,10 +162,7 @@ impl FimImage {
                 self.p()
             )));
         }
-        let sub = self
-            .data
-            .slice(ndarray::s![..p, ..n, ..m])
-            .to_owned();
+        let sub = self.data.slice(ndarray::s![..p, ..n, ..m]).to_owned();
         Ok(FimImage { data: sub })
     }
 
@@ -293,6 +290,17 @@ impl FimImage {
     }
 }
 
+fn checked_len(m: usize, n: usize, p: usize) -> Result<usize> {
+    m.checked_mul(n)
+        .and_then(|mn| mn.checked_mul(p))
+        .ok_or_else(|| {
+            DwError::InvalidDimensions(format!(
+                "Image dimensions {}x{}x{} overflow addressable memory",
+                m, n, p
+            ))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +321,12 @@ mod tests {
         assert_eq!(img.get(0, 0, 0), 0.0);
         assert_eq!(img.get(1, 0, 0), 1.0);
         assert_eq!(img.get(0, 1, 0), 4.0); // stride M=4
+    }
+
+    #[test]
+    fn test_from_vec_rejects_dimension_overflow() {
+        assert!(FimImage::from_vec(usize::MAX, 2, 1, Vec::new()).is_err());
+        assert!(FimImage::from_slice(usize::MAX, 2, 1, &[]).is_err());
     }
 
     #[test]

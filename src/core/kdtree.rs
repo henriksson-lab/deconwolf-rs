@@ -4,8 +4,10 @@
 //! and image shifting operations. The tree is hard-coded for 3D data
 //! (set unused dimensions to 0 for 1D/2D use).
 
-use std::collections::BinaryHeap;
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
+use super::{DwError, Result};
 
 /// 3D K-d tree for spatial queries.
 #[allow(dead_code)]
@@ -90,9 +92,26 @@ impl KdTree {
     /// `bin_size` controls the maximum number of points per leaf node.
     /// Values of 4-32 are typically optimal regardless of data size.
     pub fn new(points: &[[f64; 3]], bin_size: usize) -> Self {
+        Self::try_new(points, bin_size).expect("KdTree requires non-empty finite points")
+    }
+
+    /// Build a new 3D K-d tree, returning an error for invalid input.
+    pub fn try_new(points: &[[f64; 3]], bin_size: usize) -> Result<Self> {
         let bin_size = bin_size.max(1);
         let n = points.len();
-        assert!(n > 0, "KdTree requires at least one point");
+        if n == 0 {
+            return Err(DwError::InvalidDimensions(
+                "KdTree requires at least one point".into(),
+            ));
+        }
+        if points
+            .iter()
+            .any(|point| !point.iter().all(|v| v.is_finite()))
+        {
+            return Err(DwError::Config(
+                "KdTree points must contain only finite coordinates".into(),
+            ));
+        }
 
         let mut tree_points: Vec<[f64; 3]> = points.to_vec();
         let mut indices: Vec<usize> = (0..n).collect();
@@ -112,20 +131,14 @@ impl KdTree {
         nodes[0].n_points = n;
 
         // Recursively split.
-        split_node(
-            &mut nodes,
-            &mut tree_points,
-            &mut indices,
-            0,
-            bin_size,
-        );
+        split_node(&mut nodes, &mut tree_points, &mut indices, 0, bin_size);
 
-        KdTree {
+        Ok(KdTree {
             nodes,
             points: tree_points,
             indices,
             max_leaf_size: bin_size,
-        }
+        })
     }
 
     /// Find the k nearest neighbors of `query`.
@@ -133,7 +146,9 @@ impl KdTree {
     /// Returns a `Vec` of `(original_index, distance)` pairs sorted by
     /// distance (closest first). Distance is Euclidean (not squared).
     pub fn query_knn(&self, query: &[f64; 3], k: usize) -> Vec<(usize, f64)> {
-        assert!(k > 0 && k <= self.points.len());
+        if k == 0 || k > self.points.len() || !query.iter().all(|v| v.is_finite()) {
+            return Vec::new();
+        }
 
         // Max-heap of size k: we keep the k smallest distances seen so far.
         let mut heap = BinaryHeap::with_capacity(k + 1);
@@ -160,14 +175,23 @@ impl KdTree {
     ///
     /// Returns `(original_index, distance)`.
     pub fn query_closest(&self, query: &[f64; 3]) -> (usize, f64) {
-        let results = self.query_knn(query, 1);
-        results[0]
+        self.query_closest_checked(query)
+            .expect("KdTree closest query requires a finite query and a non-empty tree")
+    }
+
+    /// Find the single closest point to `query`, returning `None` for invalid
+    /// non-finite queries.
+    pub fn query_closest_checked(&self, query: &[f64; 3]) -> Option<(usize, f64)> {
+        self.query_knn(query, 1).into_iter().next()
     }
 
     /// Find all points within Euclidean `radius` of `query`.
     ///
     /// Returns `(original_index, distance)` pairs (unordered).
     pub fn query_radius(&self, query: &[f64; 3], radius: f64) -> Vec<(usize, f64)> {
+        if !radius.is_finite() || radius <= 0.0 || !query.iter().all(|v| v.is_finite()) {
+            return Vec::new();
+        }
         let mut results = Vec::new();
         let r2 = radius * radius;
         self.radius_search(0, query, r2, &mut results);
@@ -180,6 +204,13 @@ impl KdTree {
     /// `cutoff * sigma` of the query point. If `cutoff <= 0`, a default
     /// of 2.5 is used.
     pub fn kde(&self, query: &[f64; 3], sigma: f64, cutoff: f64) -> f64 {
+        if !sigma.is_finite()
+            || sigma <= 0.0
+            || !cutoff.is_finite()
+            || !query.iter().all(|v| v.is_finite())
+        {
+            return 0.0;
+        }
         let r = if cutoff > 0.0 {
             cutoff * sigma
         } else {
@@ -287,13 +318,7 @@ impl KdTree {
         self.radius_search(right, query, r2, results);
     }
 
-    fn kde_recursive(
-        &self,
-        node_id: usize,
-        query: &[f64; 3],
-        r2: f64,
-        sigma22: f64,
-    ) -> f64 {
+    fn kde_recursive(&self, node_id: usize, query: &[f64; 3], r2: f64, sigma22: f64) -> f64 {
         if node_id >= self.nodes.len() {
             return 0.0;
         }
@@ -320,8 +345,7 @@ impl KdTree {
 
         let left = node.left;
         let right = node.right;
-        self.kde_recursive(left, query, r2, sigma22)
-            + self.kde_recursive(right, query, r2, sigma22)
+        self.kde_recursive(left, query, r2, sigma22) + self.kde_recursive(right, query, r2, sigma22)
     }
 }
 
@@ -586,11 +610,7 @@ mod tests {
     }
 
     /// Brute-force radius query.
-    fn brute_force_radius(
-        points: &[[f64; 3]],
-        query: &[f64; 3],
-        radius: f64,
-    ) -> Vec<(usize, f64)> {
+    fn brute_force_radius(points: &[[f64; 3]], query: &[f64; 3], radius: f64) -> Vec<(usize, f64)> {
         points
             .iter()
             .enumerate()
@@ -629,6 +649,13 @@ mod tests {
         assert!(!tree.nodes.is_empty());
         assert_eq!(tree.points.len(), 100);
         assert_eq!(tree.indices.len(), 100);
+    }
+
+    #[test]
+    fn try_new_rejects_empty_and_non_finite_points() {
+        assert!(KdTree::try_new(&[], 4).is_err());
+        assert!(KdTree::try_new(&[[f64::NAN, 0.0, 0.0]], 4).is_err());
+        assert!(KdTree::try_new(&[[1.0, 2.0, 3.0]], 0).is_ok());
     }
 
     #[test]
@@ -747,6 +774,23 @@ mod tests {
             tree_kde,
             brute_kde,
         );
+    }
+
+    #[test]
+    fn radius_and_kde_reject_invalid_parameters() {
+        let points = pseudo_random_points(10, 12);
+        let tree = KdTree::new(&points, 4);
+        let query = [50.0, 50.0, 50.0];
+
+        assert!(tree.query_knn(&query, 0).is_empty());
+        assert!(tree.query_knn(&query, points.len() + 1).is_empty());
+        assert!(tree.query_knn(&[f64::NAN, 0.0, 0.0], 1).is_empty());
+        assert!(tree.query_closest_checked(&[f64::NAN, 0.0, 0.0]).is_none());
+        assert!(tree.query_radius(&query, -1.0).is_empty());
+        assert!(tree.query_radius(&[f64::NAN, 0.0, 0.0], 10.0).is_empty());
+        assert_eq!(tree.kde(&query, 0.0, 3.0), 0.0);
+        assert_eq!(tree.kde(&query, f64::NAN, 3.0), 0.0);
+        assert_eq!(tree.kde(&query, 1.0, f64::INFINITY), 0.0);
     }
 
     #[test]

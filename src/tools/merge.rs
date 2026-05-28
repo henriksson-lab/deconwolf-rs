@@ -39,7 +39,7 @@ pub fn run_merge(output: &Path, inputs: &[PathBuf]) -> Result<(), DwError> {
     }
 
     // Compute total number of Z-planes.
-    let total_p: usize = images.iter().map(|img| img.p()).sum();
+    let total_p = total_planes(&images)?;
 
     // Concatenate all planes into one volume.
     let mut out = FimImage::zeros(ref_m, ref_n, total_p);
@@ -61,4 +61,26 @@ pub fn run_merge(output: &Path, inputs: &[PathBuf]) -> Result<(), DwError> {
     tiff_io::tiff_write_f32(output, &out, Some(&out_meta))?;
 
     Ok(())
+}
+
+fn total_planes(images: &[FimImage]) -> Result<usize, DwError> {
+    total_planes_from_depths(images.iter().map(FimImage::p))
+}
+
+fn total_planes_from_depths(depths: impl IntoIterator<Item = usize>) -> Result<usize, DwError> {
+    depths.into_iter().try_fold(0usize, |total, depth| {
+        total.checked_add(depth).ok_or_else(|| {
+            DwError::InvalidDimensions("Merged TIFF stack has too many planes".into())
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn total_planes_rejects_overflow() {
+        assert!(total_planes_from_depths([usize::MAX, 1]).is_err());
+    }
 }

@@ -1,9 +1,9 @@
+pub mod align_dots;
+pub mod background;
+pub mod dots;
+pub mod imshift;
 pub mod maxproj;
 pub mod merge;
-pub mod background;
-pub mod imshift;
-pub mod dots;
-pub mod sparse;
-pub mod psf;
 pub mod nuclei;
-pub mod align_dots;
+pub mod psf;
+pub mod sparse;

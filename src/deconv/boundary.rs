@@ -3,6 +3,7 @@ use crate::fft::backend::FftContext;
 use crate::fft::FftBackend;
 
 /// Compute Bertero boundary weights for reducing edge artifacts.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_bertero_weights<B: FftBackend>(
     m: usize,
     n: usize,

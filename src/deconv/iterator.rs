@@ -41,7 +41,7 @@ impl DwIterator {
 
     /// Advance to the next iteration.
     /// Returns `true` if iteration should continue.
-    pub fn next(&mut self) -> bool {
+    pub fn advance(&mut self) -> bool {
         self.iter += 1;
 
         if self.iter > self.max_iter {
@@ -79,21 +79,21 @@ mod tests {
     fn test_fixed_iterations() {
         let mut it = DwIterator::new(IterType::Fixed, 5, 250, 0.02, 0.0);
         for _ in 0..5 {
-            assert!(it.next());
+            assert!(it.advance());
         }
-        assert!(!it.next());
+        assert!(!it.advance());
     }
 
     #[test]
     fn test_relative_convergence() {
         let mut it = DwIterator::new(IterType::Relative, 50, 100, 0.01, 0.0);
         it.set_error(100.0);
-        assert!(it.next()); // iter 1
+        assert!(it.advance()); // iter 1
 
         it.set_error(50.0);
-        assert!(it.next()); // iter 2, always continue
+        assert!(it.advance()); // iter 2, always continue
 
         it.set_error(49.9);
-        assert!(!it.next()); // relative change < 0.01, should stop
+        assert!(!it.advance()); // relative change < 0.01, should stop
     }
 }

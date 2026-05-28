@@ -1,16 +1,16 @@
-/// FFTW backend for 3D real-to-complex FFT.
-///
-/// Currently delegates to RustFftBackend with a compatibility wrapper.
-/// TODO: Replace with actual FFTW3 bindings (via the `fftw` crate) when
-/// the crate API is stable and FFTW3 is available on the build system.
-/// To use actual FFTW3 bindings, install FFTW3 and update this module.
+//! FFTW backend for 3D real-to-complex FFT.
+//!
+//! Currently delegates to RustFftBackend with a compatibility wrapper.
+//! TODO: Replace with actual FFTW3 bindings (via the `fftw` crate) when
+//! the crate API is stable and FFTW3 is available on the build system.
+//! To use actual FFTW3 bindings, install FFTW3 and update this module.
 
-#[cfg(feature = "fftw-backend")]
-use num_complex::Complex;
 #[cfg(feature = "fftw-backend")]
 use super::backend::{FftBackend, Result};
 #[cfg(feature = "fftw-backend")]
 use super::rustfft_backend::RustFftBackend;
+#[cfg(feature = "fftw-backend")]
+use num_complex::Complex;
 
 /// FFTW-compatible FFT backend.
 ///

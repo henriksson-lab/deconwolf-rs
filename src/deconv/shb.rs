@@ -60,12 +60,23 @@ impl DeconvMethod for ShbMethod {
             opts.abs_error,
         );
 
-        while iter.next() {
+        while iter.advance() {
             let k = iter.current();
             let error = shb_iteration(
-                &mut x, &mut x_prev, image, &psf_fft,
-                weights.as_ref(), fft, opts, k,
-                m, n, p, wm, wn, wp,
+                &mut x,
+                &mut x_prev,
+                image,
+                &psf_fft,
+                weights.as_ref(),
+                fft,
+                opts,
+                k,
+                m,
+                n,
+                p,
+                wm,
+                wn,
+                wp,
             )?;
             iter.set_error(error);
 
@@ -78,6 +89,7 @@ impl DeconvMethod for ShbMethod {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn shb_iteration<B: FftBackend>(
     x: &mut FimImage,
     x_prev: &mut FimImage,
@@ -87,8 +99,12 @@ fn shb_iteration<B: FftBackend>(
     fft: &FftContext<B>,
     opts: &DwOpts,
     k: usize,
-    m: usize, n: usize, p: usize,
-    wm: usize, wn: usize, wp: usize,
+    m: usize,
+    n: usize,
+    p: usize,
+    wm: usize,
+    wn: usize,
+    wp: usize,
 ) -> Result<f64, crate::core::DwError> {
     let total = wm * wn * wp;
 
@@ -101,12 +117,9 @@ fn shb_iteration<B: FftBackend>(
     let mut pk_data = vec![0.0f32; total];
     let x_slice = x.as_slice();
     let xp_slice = x_prev.as_slice();
-    pk_data
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, v)| {
-            *v = (x_slice[i] + alpha * (x_slice[i] - xp_slice[i])).max(0.0);
-        });
+    pk_data.par_iter_mut().enumerate().for_each(|(i, v)| {
+        *v = (x_slice[i] + alpha * (x_slice[i] - xp_slice[i])).max(0.0);
+    });
 
     let pk_fft = fft
         .forward(&pk_data)
@@ -157,11 +170,15 @@ fn shb_iteration<B: FftBackend>(
     Ok(error)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_error_shb(
     image: &FimImage,
     y: &[f32],
-    m: usize, n: usize, p: usize,
-    wm: usize, wn: usize,
+    m: usize,
+    n: usize,
+    p: usize,
+    wm: usize,
+    wn: usize,
     metric: Metric,
 ) -> f64 {
     let im = image.as_slice();

@@ -1,5 +1,5 @@
 use num_complex::Complex;
-use rustfft::{FftPlanner, FftDirection};
+use rustfft::{FftDirection, FftPlanner};
 
 use super::backend::{FftBackend, FftError, Result};
 
@@ -20,15 +20,19 @@ pub struct RustFftBackend {
 impl FftBackend for RustFftBackend {
     fn new_context(m: usize, n: usize, p: usize, _threads: usize) -> Result<Self> {
         if m == 0 || n == 0 || p == 0 {
-            return Err(FftError::InvalidDimensions("All dimensions must be > 0".into()));
+            return Err(FftError::InvalidDimensions(
+                "All dimensions must be > 0".into(),
+            ));
         }
         let cm = m / 2 + 1;
+        let total = checked_size(m, n, p)?;
+        let csize = checked_size(cm, n, p)?;
         Ok(Self {
             m,
             n,
             p,
-            csize: cm * n * p,
-            norm: 1.0 / (m * n * p) as f32,
+            csize,
+            norm: 1.0 / total as f32,
         })
     }
 
@@ -41,7 +45,7 @@ impl FftBackend for RustFftBackend {
     }
 
     fn forward(&self, input: &[f32]) -> Result<Vec<Complex<f32>>> {
-        let total = self.m * self.n * self.p;
+        let total = checked_size(self.m, self.n, self.p)?;
         if input.len() != total {
             return Err(FftError::InvalidDimensions(format!(
                 "Expected {} elements, got {}",
@@ -195,6 +199,17 @@ impl FftBackend for RustFftBackend {
     }
 }
 
+fn checked_size(m: usize, n: usize, p: usize) -> Result<usize> {
+    m.checked_mul(n)
+        .and_then(|mn| mn.checked_mul(p))
+        .ok_or_else(|| {
+            FftError::InvalidDimensions(format!(
+                "Dimensions {}x{}x{} overflow addressable memory",
+                m, n, p
+            ))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +240,10 @@ mod tests {
     fn test_complex_size() {
         let backend = RustFftBackend::new_context(8, 4, 2, 1).unwrap();
         assert_eq!(backend.complex_size(), 5 * 4 * 2); // (8/2+1) * 4 * 2
+    }
+
+    #[test]
+    fn test_dimension_overflow_rejected() {
+        assert!(RustFftBackend::new_context(usize::MAX, 2, 1, 1).is_err());
     }
 }

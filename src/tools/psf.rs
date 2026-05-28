@@ -1,4 +1,4 @@
-use std::f64::consts::PI;
+use std::f64::consts::{FRAC_2_PI, PI};
 
 use rayon::prelude::*;
 
@@ -19,12 +19,10 @@ pub fn bessel_j0(x: f64) -> f64 {
         let y = x * x;
         let num = 57568490574.0
             + y * (-13362590354.0
-                + y * (651619640.7
-                    + y * (-11214424.18 + y * (77392.33017 + y * (-184.9052456)))));
+                + y * (651619640.7 + y * (-11214424.18 + y * (77392.33017 + y * (-184.9052456)))));
         let den = 57568490411.0
             + y * (1029532985.0
-                + y * (9494680.718
-                    + y * (59272.64853 + y * (267.8532712 + y * 1.0))));
+                + y * (9494680.718 + y * (59272.64853 + y * (267.8532712 + y * 1.0))));
         num / den
     } else {
         let z = 8.0 / ax;
@@ -32,13 +30,11 @@ pub fn bessel_j0(x: f64) -> f64 {
         let xx = ax - 0.785398164;
         let p0 = 1.0
             + y * (-0.1098628627e-2
-                + y * (0.2734510407e-4
-                    + y * (-0.2073370639e-5 + y * 0.2093887211e-6)));
+                + y * (0.2734510407e-4 + y * (-0.2073370639e-5 + y * 0.2093887211e-6)));
         let q0 = -0.1562499995e-1
             + y * (0.1430488765e-3
-                + y * (-0.6911147651e-5
-                    + y * (0.7621095161e-6 - y * 0.934935152e-7)));
-        (0.636619772 / ax).sqrt() * (xx.cos() * p0 - z * xx.sin() * q0)
+                + y * (-0.6911147651e-5 + y * (0.7621095161e-6 - y * 0.934935152e-7)));
+        (FRAC_2_PI / ax).sqrt() * (xx.cos() * p0 - z * xx.sin() * q0)
     }
 }
 
@@ -50,12 +46,7 @@ pub fn bessel_j0(x: f64) -> f64 {
 /// rule with `n` sub-intervals (n must be even; will be rounded up if odd).
 ///
 /// `f` returns (real_part, imag_part).
-fn simpson_integrate<F: Fn(f64) -> (f64, f64)>(
-    f: F,
-    a: f64,
-    b: f64,
-    n: usize,
-) -> (f64, f64) {
+fn simpson_integrate<F: Fn(f64) -> (f64, f64)>(f: F, a: f64, b: f64, n: usize) -> (f64, f64) {
     let n = if n % 2 == 1 { n + 1 } else { n };
     let h = (b - a) / n as f64;
     let (mut sum_r, mut sum_i) = {
@@ -131,16 +122,14 @@ pub fn generate_widefield_psf(
     size_xy: usize,
     size_z: usize,
 ) -> Result<FimImage> {
-    if size_xy % 2 == 0 || size_z % 2 == 0 {
+    if size_xy.is_multiple_of(2) || size_z.is_multiple_of(2) {
         return Err(DwError::InvalidDimensions(
             "PSF dimensions must be odd".into(),
         ));
     }
-    if na <= 0.0 || ni <= 0.0 || lambda <= 0.0 || dx <= 0.0 || dz <= 0.0 {
-        return Err(DwError::Config(
-            "All physical parameters must be positive".into(),
-        ));
-    }
+    validate_optical_params(na, ni, lambda, dx, dz)?;
+    let plane_len = checked_plane_len(size_xy)?;
+    let stack_len = checked_stack_len(size_xy, size_z)?;
 
     let k = 2.0 * PI / lambda;
     let center_xy = (size_xy / 2) as f64;
@@ -169,7 +158,7 @@ pub fn generate_widefield_psf(
                 .collect();
 
             // 2. Fill 2-D slice using linear interpolation from radial profile
-            let mut plane = vec![0.0f32; size_xy * size_xy];
+            let mut plane = vec![0.0f32; plane_len];
             for iy in 0..size_xy {
                 for ix in 0..size_xy {
                     let rx = ix as f64 - center_xy;
@@ -192,7 +181,7 @@ pub fn generate_widefield_psf(
         .collect();
 
     // Flatten into a single buffer (z-major order)
-    let mut data = Vec::with_capacity(size_z * size_xy * size_xy);
+    let mut data = Vec::with_capacity(stack_len);
     for plane in &planes {
         data.extend_from_slice(plane);
     }
@@ -229,6 +218,7 @@ pub fn generate_widefield_psf(
 /// * `size_xy`    - Lateral extent (odd)
 /// * `size_z`     - Number of z-planes (odd)
 /// * `pinhole_au` - Pinhole diameter in Airy Units (1.0 is one Airy disk)
+#[allow(clippy::too_many_arguments)]
 pub fn generate_confocal_psf(
     na: f64,
     ni: f64,
@@ -240,6 +230,12 @@ pub fn generate_confocal_psf(
     size_z: usize,
     pinhole_au: f64,
 ) -> Result<FimImage> {
+    if !pinhole_au.is_finite() || pinhole_au < 0.0 {
+        return Err(DwError::Config(
+            "Pinhole size must be a non-negative finite value".into(),
+        ));
+    }
+
     // Generate excitation PSF
     let excitation = generate_widefield_psf(na, ni, lambda_ex, dx, dz, size_xy, size_z)?;
 
@@ -254,8 +250,14 @@ pub fn generate_confocal_psf(
 
     // Build a 2-D normalised disk kernel
     let kr = pinhole_radius_px.ceil() as usize;
-    let ksize = 2 * kr + 1;
-    let mut kernel = vec![0.0f64; ksize * ksize];
+    let ksize = kr
+        .checked_mul(2)
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(|| DwError::InvalidDimensions("Pinhole kernel size overflow".into()))?;
+    let kernel_len = checked_square_len(ksize, "Pinhole kernel size overflow")?;
+    let plane_len = checked_plane_len(size_xy)?;
+    let stack_len = checked_stack_len(size_xy, size_z)?;
+    let mut kernel = vec![0.0f64; kernel_len];
     let mut ksum = 0.0f64;
     for ky in 0..ksize {
         for kx in 0..ksize {
@@ -277,7 +279,7 @@ pub fn generate_confocal_psf(
     // Convolve each z-plane of detection with the disk kernel (direct spatial
     // convolution -- acceptable because kernel is small).
     for pz in 0..size_z {
-        let mut conv = vec![0.0f64; size_xy * size_xy];
+        let mut conv = vec![0.0f64; plane_len];
         for iy in 0..size_xy {
             for ix in 0..size_xy {
                 let mut acc = 0.0f64;
@@ -285,11 +287,7 @@ pub fn generate_confocal_psf(
                     for kx in 0..ksize {
                         let sx = ix as isize + kx as isize - kr as isize;
                         let sy = iy as isize + ky as isize - kr as isize;
-                        if sx >= 0
-                            && sx < size_xy as isize
-                            && sy >= 0
-                            && sy < size_xy as isize
-                        {
+                        if sx >= 0 && sx < size_xy as isize && sy >= 0 && sy < size_xy as isize {
                             acc += detection.get(sx as usize, sy as usize, pz) as f64
                                 * kernel[ky * ksize + kx];
                         }
@@ -306,11 +304,11 @@ pub fn generate_confocal_psf(
     }
 
     // Multiply excitation x detection
-    let mut data = vec![0.0f32; size_z * size_xy * size_xy];
+    let mut data = vec![0.0f32; stack_len];
     for pz in 0..size_z {
         for iy in 0..size_xy {
             for ix in 0..size_xy {
-                data[pz * size_xy * size_xy + iy * size_xy + ix] =
+                data[pz * plane_len + iy * size_xy + ix] =
                     excitation.get(ix, iy, pz) * detection.get(ix, iy, pz);
             }
         }
@@ -346,17 +344,23 @@ pub fn generate_sted_psf(
     size_xy: usize,
     size_z: usize,
 ) -> Result<FimImage> {
-    if size_xy % 2 == 0 || size_z % 2 == 0 {
+    if size_xy.is_multiple_of(2) || size_z.is_multiple_of(2) {
         return Err(DwError::InvalidDimensions(
             "PSF dimensions must be odd".into(),
         ));
     }
-    if lateral_fwhm <= 0.0 || axial_fwhm <= 0.0 {
+    if !lateral_fwhm.is_finite()
+        || !axial_fwhm.is_finite()
+        || lateral_fwhm <= 0.0
+        || axial_fwhm <= 0.0
+    {
         return Err(DwError::Config("FWHM values must be positive".into()));
     }
 
     let center_xy = (size_xy / 2) as f64;
     let center_z = (size_z / 2) as f64;
+    let plane_len = checked_plane_len(size_xy)?;
+    let stack_len = checked_stack_len(size_xy, size_z)?;
 
     // Lorentzian: FWHM = 2*gamma  =>  gamma = FWHM/2
     let gamma = lateral_fwhm / 2.0;
@@ -366,7 +370,7 @@ pub fn generate_sted_psf(
     let sigma = axial_fwhm / (2.0 * (2.0_f64 * 2.0_f64.ln()).sqrt());
     let two_sigma2 = 2.0 * sigma * sigma;
 
-    let mut data = vec![0.0f32; size_z * size_xy * size_xy];
+    let mut data = vec![0.0f32; stack_len];
 
     for pz in 0..size_z {
         let dz = pz as f64 - center_z;
@@ -377,8 +381,7 @@ pub fn generate_sted_psf(
                 let dxx = ix as f64 - center_xy;
                 let r2 = dxx * dxx + dy * dy;
                 let lorentz = 1.0 / (1.0 + r2 / gamma2);
-                data[pz * size_xy * size_xy + iy * size_xy + ix] =
-                    (lorentz * gauss) as f32;
+                data[pz * plane_len + iy * size_xy + ix] = (lorentz * gauss) as f32;
             }
         }
     }
@@ -395,6 +398,45 @@ pub fn generate_sted_psf(
     FimImage::from_vec(size_xy, size_xy, size_z, data)
 }
 
+fn validate_optical_params(na: f64, ni: f64, lambda: f64, dx: f64, dz: f64) -> Result<()> {
+    for (name, value) in [
+        ("na", na),
+        ("ni", ni),
+        ("lambda", lambda),
+        ("dx", dx),
+        ("dz", dz),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(DwError::Config(format!(
+                "{} must be a positive finite value",
+                name
+            )));
+        }
+    }
+    if ni < na {
+        return Err(DwError::Config(format!(
+            "ni ({}) must be >= NA ({})",
+            ni, na
+        )));
+    }
+    Ok(())
+}
+
+fn checked_square_len(size: usize, message: &str) -> Result<usize> {
+    size.checked_mul(size)
+        .ok_or_else(|| DwError::InvalidDimensions(message.into()))
+}
+
+fn checked_plane_len(size_xy: usize) -> Result<usize> {
+    checked_square_len(size_xy, "PSF plane size overflow")
+}
+
+fn checked_stack_len(size_xy: usize, size_z: usize) -> Result<usize> {
+    checked_plane_len(size_xy)?
+        .checked_mul(size_z)
+        .ok_or_else(|| DwError::InvalidDimensions("PSF stack size overflow".into()))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -406,22 +448,14 @@ mod tests {
     #[test]
     fn test_bessel_j0_at_zero() {
         let val = bessel_j0(0.0);
-        assert!(
-            (val - 1.0).abs() < 1e-6,
-            "J0(0) should be 1, got {}",
-            val
-        );
+        assert!((val - 1.0).abs() < 1e-6, "J0(0) should be 1, got {}", val);
     }
 
     #[test]
     fn test_bessel_j0_first_root() {
         // First zero of J0 is at approximately 2.4048255577
         let val = bessel_j0(2.4048255577);
-        assert!(
-            val.abs() < 1e-4,
-            "J0(2.4048) should be ~0, got {}",
-            val
-        );
+        assert!(val.abs() < 1e-4, "J0(2.4048) should be ~0, got {}", val);
     }
 
     #[test]
@@ -558,8 +592,36 @@ mod tests {
     }
 
     #[test]
+    fn test_widefield_psf_rejects_invalid_optics() {
+        assert!(generate_widefield_psf(1.6, 1.5, 520.0, 65.0, 200.0, 11, 5).is_err());
+        assert!(generate_widefield_psf(f64::NAN, 1.515, 520.0, 65.0, 200.0, 11, 5).is_err());
+    }
+
+    #[test]
+    fn test_confocal_psf_rejects_invalid_pinhole() {
+        assert!(generate_confocal_psf(1.4, 1.515, 520.0, 488.0, 65.0, 200.0, 11, 5, -1.0).is_err());
+        assert!(
+            generate_confocal_psf(1.4, 1.515, 520.0, 488.0, 65.0, 200.0, 11, 5, f64::NAN).is_err()
+        );
+    }
+
+    #[test]
     fn test_sted_psf_even_size_rejected() {
         let result = generate_sted_psf(3.0, 5.0, 10, 5);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sted_psf_rejects_nan_fwhm() {
+        assert!(generate_sted_psf(f64::NAN, 5.0, 11, 5).is_err());
+    }
+
+    #[test]
+    fn test_psf_size_helpers_reject_overflow() {
+        assert_eq!(checked_plane_len(5).unwrap(), 25);
+        assert_eq!(checked_stack_len(5, 3).unwrap(), 75);
+        assert!(checked_plane_len(usize::MAX).is_err());
+        assert!(checked_stack_len(usize::MAX / 2 + 1, 3).is_err());
+        assert!(checked_stack_len(usize::MAX / 2 + 1, 2).is_err());
     }
 }

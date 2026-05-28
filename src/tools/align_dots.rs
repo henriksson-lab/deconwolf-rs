@@ -25,6 +25,8 @@ pub fn run_align_dots(
     max_points: usize,
     output_path: &Path,
 ) -> Result<(), DwError> {
+    validate_align_params(sigma, capture_distance, max_points)?;
+
     // Load dot files
     let mut dots1 = FTab::from_tsv(dots1_path)?;
     let mut dots2 = FTab::from_tsv(dots2_path)?;
@@ -46,6 +48,11 @@ pub fn run_align_dots(
     dots2.sort_by_col(col_int, true);
     dots1.head(max_points);
     dots2.head(max_points);
+    if dots1.nrow() == 0 || dots2.nrow() == 0 {
+        return Err(DwError::Config(
+            "Dot TSV files must contain at least one usable point in each set".into(),
+        ));
+    }
 
     println!(
         "Using {} dots from set 1, {} dots from set 2",
@@ -54,27 +61,11 @@ pub fn run_align_dots(
     );
 
     // Extract dots2 as 3D points and build KD-tree
-    let points2: Vec<[f64; 3]> = (0..dots2.nrow())
-        .map(|r| {
-            [
-                dots2.get(r, col_x) as f64,
-                dots2.get(r, col_y) as f64,
-                dots2.get(r, col_z) as f64,
-            ]
-        })
-        .collect();
-    let tree = KdTree::new(&points2, 16);
+    let points2 = extract_points(&dots2, col_x, col_y, col_z, "dots2")?;
+    let tree = KdTree::try_new(&points2, 16)?;
 
     // Extract dots1 as 3D points
-    let points1: Vec<[f64; 3]> = (0..dots1.nrow())
-        .map(|r| {
-            [
-                dots1.get(r, col_x) as f64,
-                dots1.get(r, col_y) as f64,
-                dots1.get(r, col_z) as f64,
-            ]
-        })
-        .collect();
+    let points1 = extract_points(&dots1, col_x, col_y, col_z, "dots1")?;
 
     // Coarse grid search: step = sigma / 2
     let coarse_step = sigma / 2.0;
@@ -90,14 +81,7 @@ pub fn run_align_dots(
     let fine_step = sigma / 8.0;
     let fine_range = coarse_step; // search +/- one coarse step around best
     let (refined_dx, refined_dy, refined_dz, refined_score) = grid_search_around(
-        &points1,
-        &tree,
-        sigma,
-        best_dx,
-        best_dy,
-        best_dz,
-        fine_range,
-        fine_step,
+        &points1, &tree, sigma, best_dx, best_dy, best_dz, fine_range, fine_step,
     );
 
     println!(
@@ -121,15 +105,54 @@ pub fn run_align_dots(
     Ok(())
 }
 
-/// Compute the KDE score for a given shift: sum of kde(dot1 + shift) for all dots1.
-fn kde_score(
-    points1: &[[f64; 3]],
-    tree: &KdTree,
+fn extract_points(
+    table: &FTab,
+    col_x: usize,
+    col_y: usize,
+    col_z: usize,
+    name: &str,
+) -> Result<Vec<[f64; 3]>, DwError> {
+    let mut points = Vec::with_capacity(table.nrow());
+    for r in 0..table.nrow() {
+        let point = [
+            table.get(r, col_x) as f64,
+            table.get(r, col_y) as f64,
+            table.get(r, col_z) as f64,
+        ];
+        if !point.iter().all(|v| v.is_finite()) {
+            return Err(DwError::Config(format!(
+                "{} contains non-finite coordinates at row {}",
+                name, r
+            )));
+        }
+        points.push(point);
+    }
+    Ok(points)
+}
+
+fn validate_align_params(
     sigma: f64,
-    dx: f64,
-    dy: f64,
-    dz: f64,
-) -> f64 {
+    capture_distance: f64,
+    max_points: usize,
+) -> Result<(), DwError> {
+    if !sigma.is_finite() || sigma <= 0.0 {
+        return Err(DwError::Config(
+            "--sigma must be a positive finite value".into(),
+        ));
+    }
+    if !capture_distance.is_finite() || capture_distance < 0.0 {
+        return Err(DwError::Config(
+            "--capture-distance must be a non-negative finite value".into(),
+        ));
+    }
+    if max_points == 0 {
+        return Err(DwError::Config("--npoint must be greater than 0".into()));
+    }
+    Ok(())
+}
+
+/// Compute the KDE score for a given shift: sum of kde(dot1 + shift) for all dots1.
+fn kde_score(points1: &[[f64; 3]], tree: &KdTree, sigma: f64, dx: f64, dy: f64, dz: f64) -> f64 {
     let cutoff = 3.0;
     points1
         .iter()
@@ -154,6 +177,7 @@ fn grid_search(
 
 /// Grid search around a center point (cx, cy, cz) +/- range in each dimension.
 /// Returns (best_dx, best_dy, best_dz, best_score).
+#[allow(clippy::too_many_arguments)]
 fn grid_search_around(
     points1: &[[f64; 3]],
     tree: &KdTree,
@@ -189,4 +213,30 @@ fn grid_search_around(
     }
 
     (best_dx, best_dy, best_dz, best_score)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn align_params_reject_invalid_search_settings() {
+        assert!(validate_align_params(0.0, 1.0, 10).is_err());
+        assert!(validate_align_params(f64::NAN, 1.0, 10).is_err());
+        assert!(validate_align_params(1.0, -1.0, 10).is_err());
+        assert!(validate_align_params(1.0, 1.0, 0).is_err());
+        assert!(validate_align_params(1.0, 0.0, 1).is_ok());
+    }
+
+    #[test]
+    fn extract_points_rejects_non_finite_coordinates() {
+        let table = FTab::from_data(1, 4, vec![1.0, f32::NAN, 3.0, 10.0]).unwrap();
+        assert!(extract_points(&table, 0, 1, 2, "dots").is_err());
+
+        let table = FTab::from_data(1, 4, vec![1.0, 2.0, 3.0, 10.0]).unwrap();
+        assert_eq!(
+            extract_points(&table, 0, 1, 2, "dots").unwrap(),
+            vec![[1.0, 2.0, 3.0]]
+        );
+    }
 }

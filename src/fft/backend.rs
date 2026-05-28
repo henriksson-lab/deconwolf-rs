@@ -62,22 +62,14 @@ impl<B: FftBackend> FftContext<B> {
     }
 
     /// Convolve: IFFT(A * B).
-    pub fn convolve(
-        &self,
-        a: &[Complex<f32>],
-        b: &[Complex<f32>],
-    ) -> Result<Vec<f32>> {
-        let product = super::complex_ops::complex_mul(a, b);
+    pub fn convolve(&self, a: &[Complex<f32>], b: &[Complex<f32>]) -> Result<Vec<f32>> {
+        let product = super::complex_ops::complex_mul(a, b)?;
         self.inverse(&product)
     }
 
     /// Convolve with conjugate: IFFT(conj(A) * B).
-    pub fn convolve_conj(
-        &self,
-        a: &[Complex<f32>],
-        b: &[Complex<f32>],
-    ) -> Result<Vec<f32>> {
-        let product = super::complex_ops::complex_mul_conj(a, b);
+    pub fn convolve_conj(&self, a: &[Complex<f32>], b: &[Complex<f32>]) -> Result<Vec<f32>> {
+        let product = super::complex_ops::complex_mul_conj(a, b)?;
         self.inverse(&product)
     }
 }

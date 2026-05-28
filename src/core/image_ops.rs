@@ -6,7 +6,7 @@ use super::image::FimImage;
 ///
 /// Kernel size is `2 * ceil(3 * sigma) + 1`. The kernel is normalized to sum to 1.
 fn gaussian_kernel(sigma: f32) -> Vec<f32> {
-    if sigma <= 0.0 {
+    if !sigma.is_finite() || sigma <= 0.0 {
         return vec![1.0];
     }
     let radius = (3.0 * sigma).ceil() as usize;
@@ -31,7 +31,7 @@ fn gaussian_kernel(sigma: f32) -> Vec<f32> {
 ///
 /// d²G/dx² = (x² / sigma⁴ - 1/sigma²) * G(x)
 fn gaussian_d2_kernel(sigma: f32) -> Vec<f32> {
-    if sigma <= 0.0 {
+    if !sigma.is_finite() || sigma <= 0.0 {
         return vec![0.0];
     }
     let radius = (3.0 * sigma).ceil() as usize;
@@ -68,10 +68,7 @@ impl FimImage {
 
     /// Sum of all pixel values.
     pub fn sum(&self) -> f64 {
-        self.as_slice()
-            .par_iter()
-            .map(|&v| v as f64)
-            .sum()
+        self.as_slice().par_iter().map(|&v| v as f64).sum()
     }
 
     /// Mean pixel value.
@@ -107,7 +104,8 @@ impl FimImage {
         if n == 0 {
             return 0.0;
         }
-        let k = ((prct / 100.0) * (n - 1) as f32).round() as usize;
+        let prct = if prct.is_finite() { prct } else { 0.0 };
+        let k = ((prct.clamp(0.0, 100.0) / 100.0) * (n - 1) as f32).round() as usize;
         let k = k.min(n - 1);
         quickselect(&mut data, k)
     }
@@ -141,34 +139,26 @@ impl FimImage {
             return;
         }
         let inv_s = 1.0 / s as f32;
-        self.as_slice_mut()
-            .par_iter_mut()
-            .for_each(|v| *v *= inv_s);
+        self.as_slice_mut().par_iter_mut().for_each(|v| *v *= inv_s);
     }
 
     /// Multiply all pixels by a scalar.
     pub fn mult_scalar(&mut self, x: f32) {
-        self.as_slice_mut()
-            .par_iter_mut()
-            .for_each(|v| *v *= x);
+        self.as_slice_mut().par_iter_mut().for_each(|v| *v *= x);
     }
 
     /// Add a scalar to all pixels.
     pub fn add_scalar(&mut self, x: f32) {
-        self.as_slice_mut()
-            .par_iter_mut()
-            .for_each(|v| *v += x);
+        self.as_slice_mut().par_iter_mut().for_each(|v| *v += x);
     }
 
     /// Clamp negative values to 0.
     pub fn project_positive(&mut self) {
-        self.as_slice_mut()
-            .par_iter_mut()
-            .for_each(|v| {
-                if *v < 0.0 {
-                    *v = 0.0;
-                }
-            });
+        self.as_slice_mut().par_iter_mut().for_each(|v| {
+            if *v < 0.0 {
+                *v = 0.0;
+            }
+        });
     }
 
     /// Shift so the minimum value becomes 0.
@@ -275,27 +265,23 @@ impl FimImage {
 
     /// Anscombe transform: x[i] = 2 * sqrt(x[i] + 3/8).
     pub fn anscombe(&mut self) {
-        self.as_slice_mut()
-            .par_iter_mut()
-            .for_each(|v| {
-                *v = 2.0 * (*v + 0.375).max(0.0).sqrt();
-            });
+        self.as_slice_mut().par_iter_mut().for_each(|v| {
+            *v = 2.0 * (*v + 0.375).max(0.0).sqrt();
+        });
     }
 
     /// Inverse Anscombe transform.
     pub fn ianscombe(&mut self) {
-        self.as_slice_mut()
-            .par_iter_mut()
-            .for_each(|v| {
-                let x = *v / 2.0;
-                *v = (x * x - 0.375).max(0.0);
-            });
+        self.as_slice_mut().par_iter_mut().for_each(|v| {
+            let x = *v / 2.0;
+            *v = (x * x - 0.375).max(0.0);
+        });
     }
 
     /// Z-crop: remove `zcrop` slices from both ends.
     pub fn zcrop(&self, zcrop: usize) -> super::error::Result<FimImage> {
         let p_dim = self.p();
-        if 2 * zcrop >= p_dim {
+        if zcrop >= p_dim || zcrop > (p_dim - 1) / 2 {
             return Err(super::error::DwError::InvalidDimensions(format!(
                 "Cannot remove {} slices from each end of {}-slice image",
                 zcrop, p_dim
@@ -326,24 +312,18 @@ impl FimImage {
             }
         }
         let half = new_p / 2;
-        let p0 = if best_plane >= half {
-            best_plane - half
-        } else {
-            0
-        };
+        let p0 = best_plane.saturating_sub(half);
         let p0 = p0.min(p_dim - new_p);
         self.get_cuboid(0, self.m(), 0, self.n(), p0, p0 + new_p)
     }
 
     /// Invert all elements: x[i] = 1/x[i].
     pub fn invert(&mut self) {
-        self.as_slice_mut()
-            .par_iter_mut()
-            .for_each(|v| {
-                if *v != 0.0 {
-                    *v = 1.0 / *v;
-                }
-            });
+        self.as_slice_mut().par_iter_mut().for_each(|v| {
+            if *v != 0.0 {
+                *v = 1.0 / *v;
+            }
+        });
     }
 
     // ---------------------------------------------------------------
@@ -377,18 +357,18 @@ impl FimImage {
                     // SAFETY: each parallel iteration writes to a non-overlapping row
                     let ptr = slice.as_ptr();
                     let mut buf = vec![0.0f32; m_dim];
-                    for mm in 0..m_dim {
+                    for (mm, out) in buf.iter_mut().enumerate().take(m_dim) {
                         let mut acc = 0.0f32;
                         let mut wsum = 0.0f32;
-                        for ki in 0..klen {
+                        for (ki, &weight) in kernel.iter().enumerate().take(klen) {
                             let src = mm as isize + ki as isize - radius as isize;
                             if src >= 0 && (src as usize) < m_dim {
                                 let val = unsafe { *ptr.add(row_start + src as usize) };
-                                acc += val * kernel[ki];
-                                wsum += kernel[ki];
+                                acc += val * weight;
+                                wsum += weight;
                             }
                         }
-                        buf[mm] = if normalized && wsum != 0.0 {
+                        *out = if normalized && wsum != 0.0 {
                             acc / wsum
                         } else {
                             acc
@@ -396,9 +376,9 @@ impl FimImage {
                     }
                     // Write back
                     let out_ptr = slice.as_ptr() as *mut f32;
-                    for mm in 0..m_dim {
+                    for (mm, &value) in buf.iter().enumerate().take(m_dim) {
                         unsafe {
-                            *out_ptr.add(row_start + mm) = buf[mm];
+                            *out_ptr.add(row_start + mm) = value;
                         }
                     }
                 });
@@ -412,29 +392,29 @@ impl FimImage {
                     let mm = idx % m_dim;
                     let ptr = slice.as_ptr();
                     let mut buf = vec![0.0f32; n_dim];
-                    for nn in 0..n_dim {
+                    for (nn, out) in buf.iter_mut().enumerate().take(n_dim) {
                         let mut acc = 0.0f32;
                         let mut wsum = 0.0f32;
-                        for ki in 0..klen {
+                        for (ki, &weight) in kernel.iter().enumerate().take(klen) {
                             let src = nn as isize + ki as isize - radius as isize;
                             if src >= 0 && (src as usize) < n_dim {
                                 let offset = pp * mn + src as usize * m_dim + mm;
                                 let val = unsafe { *ptr.add(offset) };
-                                acc += val * kernel[ki];
-                                wsum += kernel[ki];
+                                acc += val * weight;
+                                wsum += weight;
                             }
                         }
-                        buf[nn] = if normalized && wsum != 0.0 {
+                        *out = if normalized && wsum != 0.0 {
                             acc / wsum
                         } else {
                             acc
                         };
                     }
                     let out_ptr = slice.as_ptr() as *mut f32;
-                    for nn in 0..n_dim {
+                    for (nn, &value) in buf.iter().enumerate().take(n_dim) {
                         let offset = pp * mn + nn * m_dim + mm;
                         unsafe {
-                            *out_ptr.add(offset) = buf[nn];
+                            *out_ptr.add(offset) = value;
                         }
                     }
                 });
@@ -448,29 +428,29 @@ impl FimImage {
                     let mm = idx % m_dim;
                     let ptr = slice.as_ptr();
                     let mut buf = vec![0.0f32; p_dim];
-                    for pp in 0..p_dim {
+                    for (pp, out) in buf.iter_mut().enumerate().take(p_dim) {
                         let mut acc = 0.0f32;
                         let mut wsum = 0.0f32;
-                        for ki in 0..klen {
+                        for (ki, &weight) in kernel.iter().enumerate().take(klen) {
                             let src = pp as isize + ki as isize - radius as isize;
                             if src >= 0 && (src as usize) < p_dim {
                                 let offset = src as usize * mn + nn * m_dim + mm;
                                 let val = unsafe { *ptr.add(offset) };
-                                acc += val * kernel[ki];
-                                wsum += kernel[ki];
+                                acc += val * weight;
+                                wsum += weight;
                             }
                         }
-                        buf[pp] = if normalized && wsum != 0.0 {
+                        *out = if normalized && wsum != 0.0 {
                             acc / wsum
                         } else {
                             acc
                         };
                     }
                     let out_ptr = slice.as_ptr() as *mut f32;
-                    for pp in 0..p_dim {
+                    for (pp, &value) in buf.iter().enumerate().take(p_dim) {
                         let offset = pp * mn + nn * m_dim + mm;
                         unsafe {
-                            *out_ptr.add(offset) = buf[pp];
+                            *out_ptr.add(offset) = value;
                         }
                     }
                 });
@@ -537,8 +517,7 @@ impl FimImage {
                                 smoothed.get(m_dim - 1, nn, pp)
                                     - smoothed.get((m_dim - 2).max(0), nn, pp)
                             } else {
-                                (smoothed.get(mm + 1, nn, pp) - smoothed.get(mm - 1, nn, pp))
-                                    * 0.5
+                                (smoothed.get(mm + 1, nn, pp) - smoothed.get(mm - 1, nn, pp)) * 0.5
                             };
                             out.set(mm, nn, pp, val);
                         }
@@ -555,8 +534,7 @@ impl FimImage {
                                 smoothed.get(mm, n_dim - 1, pp)
                                     - smoothed.get(mm, (n_dim - 2).max(0), pp)
                             } else {
-                                (smoothed.get(mm, nn + 1, pp) - smoothed.get(mm, nn - 1, pp))
-                                    * 0.5
+                                (smoothed.get(mm, nn + 1, pp) - smoothed.get(mm, nn - 1, pp)) * 0.5
                             };
                             out.set(mm, nn, pp, val);
                         }
@@ -573,8 +551,7 @@ impl FimImage {
                                 smoothed.get(mm, nn, p_dim - 1)
                                     - smoothed.get(mm, nn, (p_dim - 2).max(0))
                             } else {
-                                (smoothed.get(mm, nn, pp + 1) - smoothed.get(mm, nn, pp - 1))
-                                    * 0.5
+                                (smoothed.get(mm, nn, pp + 1) - smoothed.get(mm, nn, pp - 1)) * 0.5
                             };
                             out.set(mm, nn, pp, val);
                         }
@@ -605,12 +582,9 @@ impl FimImage {
         let dx_s = dx.as_slice();
         let dy_s = dy.as_slice();
         let dz_s = dz.as_slice();
-        out_s
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(i, o)| {
-                *o = (dx_s[i] * dx_s[i] + dy_s[i] * dy_s[i] + dz_s[i] * dz_s[i]).sqrt();
-            });
+        out_s.par_iter_mut().enumerate().for_each(|(i, o)| {
+            *o = (dx_s[i] * dx_s[i] + dy_s[i] * dy_s[i] + dz_s[i] * dz_s[i]).sqrt();
+        });
         out
     }
 
@@ -667,6 +641,15 @@ impl FimImage {
     /// Coordinates are in (M, N, P) order. Returns 0 if out of bounds.
     pub fn interp3_linear(&self, x: f64, y: f64, z: f64) -> f32 {
         let (m_dim, n_dim, p_dim) = self.dims();
+        if m_dim == 0
+            || n_dim == 0
+            || p_dim == 0
+            || !x.is_finite()
+            || !y.is_finite()
+            || !z.is_finite()
+        {
+            return 0.0;
+        }
         if x < 0.0
             || y < 0.0
             || z < 0.0
@@ -753,7 +736,7 @@ impl FimImage {
             // Union-Find for this plane
             let mut parent: Vec<i32> = Vec::new();
 
-            fn find(parent: &mut Vec<i32>, mut x: i32) -> i32 {
+            fn find(parent: &mut [i32], mut x: i32) -> i32 {
                 while parent[x as usize] != x {
                     parent[x as usize] = parent[parent[x as usize] as usize];
                     x = parent[x as usize];
@@ -761,7 +744,7 @@ impl FimImage {
                 x
             }
 
-            fn union(parent: &mut Vec<i32>, a: i32, b: i32) {
+            fn union(parent: &mut [i32], a: i32, b: i32) {
                 let ra = find(parent, a);
                 let rb = find(parent, b);
                 if ra != rb {
@@ -807,7 +790,7 @@ impl FimImage {
                         labels[idx] = min_label;
                         // Union all neighbors
                         for &nl in &neighbors {
-                            union(&mut parent, (nl - local_start) as i32, (min_label - local_start) as i32);
+                            union(&mut parent, nl - local_start, min_label - local_start);
                         }
                     }
                 }
@@ -818,7 +801,7 @@ impl FimImage {
                 for mm in 0..m_dim {
                     let idx = plane_offset + nn * m_dim + mm;
                     if labels[idx] > 0 {
-                        let local = (labels[idx] - local_start) as i32;
+                        let local = labels[idx] - local_start;
                         let root = find(&mut parent, local);
                         labels[idx] = root + local_start;
                     }
@@ -865,8 +848,8 @@ impl FimImage {
         let mut best_var = -1.0f64;
         let mut best_t = 0usize;
 
-        for t in 0..nbins {
-            w_bg += hist[t] as f64;
+        for (t, &count) in hist.iter().enumerate().take(nbins) {
+            w_bg += count as f64;
             if w_bg == 0.0 {
                 continue;
             }
@@ -874,7 +857,7 @@ impl FimImage {
             if w_fg == 0.0 {
                 break;
             }
-            sum_bg += t as f64 * hist[t] as f64;
+            sum_bg += t as f64 * count as f64;
             let mean_bg = sum_bg / w_bg;
             let mean_fg = (sum_total - sum_bg) / w_fg;
             let diff = mean_bg - mean_fg;
@@ -898,6 +881,9 @@ impl FimImage {
     /// computed with the given Gaussian sigma.
     pub fn focus_gm(&self, sigma: f32) -> Vec<f32> {
         let (m_dim, n_dim, p_dim) = self.dims();
+        if m_dim == 0 || n_dim == 0 {
+            return vec![0.0; p_dim];
+        }
         let gm = self.gradient_magnitude(sigma);
         let plane_size = (m_dim * n_dim) as f64;
         let mut result = Vec::with_capacity(p_dim);
@@ -1104,6 +1090,22 @@ mod tests {
         assert!((img.percentile(50.0) - 50.0).abs() < 1.0);
         assert_eq!(img.percentile(0.0), 0.0);
         assert_eq!(img.percentile(100.0), 99.0);
+        assert_eq!(img.percentile(f32::NAN), 0.0);
+        assert_eq!(img.percentile(200.0), 99.0);
+    }
+
+    #[test]
+    fn image_ops_handle_non_finite_smoothing_and_empty_dimensions() {
+        assert_eq!(gaussian_kernel(f32::NAN), vec![1.0]);
+        assert_eq!(gaussian_d2_kernel(f32::INFINITY), vec![0.0]);
+
+        let empty = FimImage::zeros(0, 1, 1);
+        assert_eq!(empty.interp3_linear(0.0, 0.0, 0.0), 0.0);
+        assert_eq!(empty.focus_gm(1.0), vec![0.0]);
+
+        let img = FimImage::zeros(1, 1, 3);
+        assert!(img.zcrop(usize::MAX).is_err());
+        assert_eq!(img.interp3_linear(f64::NAN, 0.0, 0.0), 0.0);
     }
 
     #[test]

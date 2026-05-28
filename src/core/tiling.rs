@@ -36,6 +36,7 @@ impl Tiling {
     ///
     /// Tiles only M and N; P is kept whole.
     pub fn new(m: usize, n: usize, p: usize, max_size: usize, overlap: usize) -> Self {
+        let max_size = max_size.max(1);
         let m_divs = get_divisions(m, max_size);
         let n_divs = get_divisions(n, max_size);
 
@@ -45,9 +46,9 @@ impl Tiling {
             for &(m0, m1) in &m_divs {
                 // Extended position with overlap (clamped to image bounds)
                 let xm0 = m0.saturating_sub(overlap);
-                let xm1 = (m1 + overlap).min(m);
+                let xm1 = m1.saturating_add(overlap).min(m);
                 let xn0 = n0.saturating_sub(overlap);
-                let xn1 = (n1 + overlap).min(n);
+                let xn1 = n1.saturating_add(overlap).min(n);
 
                 tiles.push(Tile {
                     pos: [m0, m1, n0, n1, 0, p],
@@ -87,7 +88,13 @@ impl Tiling {
     }
 
     /// Blend a processed tile back into the output image using triangular weights.
-    pub fn blend_tile(&self, output: &mut FimImage, weights: &mut FimImage, tile_idx: usize, tile_data: &FimImage) {
+    pub fn blend_tile(
+        &self,
+        output: &mut FimImage,
+        weights: &mut FimImage,
+        tile_idx: usize,
+        tile_data: &FimImage,
+    ) {
         let tile = &self.tiles[tile_idx];
         let [xm0, xm1, xn0, xn1, _xp0, _xp1] = tile.xpos;
         let [m0, m1, n0, n1, _, _] = tile.pos;
@@ -128,7 +135,12 @@ impl Tiling {
 }
 
 /// Compute a 1D triangular weight.
-fn weight_1d(local_pos: usize, _extended_size: usize, offset_from_core: usize, core_size: usize) -> f32 {
+fn weight_1d(
+    local_pos: usize,
+    _extended_size: usize,
+    offset_from_core: usize,
+    core_size: usize,
+) -> f32 {
     if core_size == 0 {
         return 1.0;
     }
@@ -148,10 +160,11 @@ fn weight_1d(local_pos: usize, _extended_size: usize, offset_from_core: usize, c
 
 /// Compute how to divide a dimension of size `total` into chunks of at most `max_size`.
 fn get_divisions(total: usize, max_size: usize) -> Vec<(usize, usize)> {
+    let max_size = max_size.max(1);
     if total <= max_size {
         return vec![(0, total)];
     }
-    let n_tiles = (total + max_size - 1) / max_size;
+    let n_tiles = total.div_ceil(max_size);
     let tile_size = total / n_tiles;
     let remainder = total % n_tiles;
 
@@ -190,6 +203,19 @@ mod tests {
         assert_eq!(tiling.num_tiles(), 4); // 2x2
         for tile in &tiling.tiles {
             assert_eq!(tile.size[2], 10); // P is always full
+        }
+    }
+
+    #[test]
+    fn zero_max_size_is_clamped() {
+        let divs = get_divisions(3, 0);
+        assert_eq!(divs, vec![(0, 1), (1, 2), (2, 3)]);
+
+        let tiling = Tiling::new(3, 2, 1, 0, usize::MAX);
+        assert_eq!(tiling.num_tiles(), 6);
+        for tile in &tiling.tiles {
+            assert!(tile.xpos[1] <= 3);
+            assert!(tile.xpos[3] <= 2);
         }
     }
 }

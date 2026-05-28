@@ -24,6 +24,7 @@ struct Dot {
 /// sorted by descending intensity, and optionally truncated to `n_dots`.
 ///
 /// Results are written as a TSV or CSV text file.
+#[allow(clippy::too_many_arguments)]
 pub fn run_dots(
     input: &Path,
     output: &Path,
@@ -35,6 +36,8 @@ pub fn run_dots(
     n_dots: Option<usize>,
     csv_format: bool,
 ) -> Result<(), DwError> {
+    validate_dot_params(na, ni, lambda, dx, dz)?;
+
     let (img, _meta) = tiff_io::tiff_read(input)?;
 
     // Compute sigma values from optical parameters.
@@ -147,16 +150,58 @@ pub fn run_dots(
     // Write output file.
     let sep = if csv_format { "," } else { "\t" };
     let mut file = File::create(output)?;
-    writeln!(file, "x{}y{}z{}intensity", sep, sep, sep)
-        .map_err(|e| DwError::Io(e))?;
+    writeln!(file, "x{}y{}z{}intensity", sep, sep, sep).map_err(DwError::Io)?;
     for dot in &dots {
         writeln!(
             file,
             "{}{}{}{}{}{}{}",
             dot.x, sep, dot.y, sep, dot.z, sep, dot.intensity
         )
-        .map_err(|e| DwError::Io(e))?;
+        .map_err(DwError::Io)?;
     }
 
     Ok(())
+}
+
+fn validate_dot_params(na: f64, ni: f64, lambda: f64, dx: f64, dz: f64) -> Result<(), DwError> {
+    for (name, value) in [
+        ("na", na),
+        ("ni", ni),
+        ("lambda", lambda),
+        ("dx", dx),
+        ("dz", dz),
+    ] {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(DwError::Config(format!(
+                "{} must be a positive finite value",
+                name
+            )));
+        }
+    }
+    if ni < na {
+        return Err(DwError::Config(format!(
+            "ni ({}) must be >= NA ({})",
+            ni, na
+        )));
+    }
+    if ni == (ni * ni - na * na).sqrt() {
+        return Err(DwError::Config(
+            "optical parameters produce an invalid axial sigma".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dot_params_must_produce_finite_sigmas() {
+        assert!(validate_dot_params(1.4, 1.515, 525.0, 65.0, 200.0).is_ok());
+        assert!(validate_dot_params(0.0, 1.515, 525.0, 65.0, 200.0).is_err());
+        assert!(validate_dot_params(1.6, 1.5, 525.0, 65.0, 200.0).is_err());
+        assert!(validate_dot_params(1.4, 1.515, 525.0, 0.0, 200.0).is_err());
+        assert!(validate_dot_params(1.4, 1.515, f64::NAN, 65.0, 200.0).is_err());
+    }
 }

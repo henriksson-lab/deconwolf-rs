@@ -7,13 +7,8 @@ use crate::core::{DwError, FimImage};
 ///
 /// For each output voxel (m, n, p), the value is interpolated from the input at
 /// position (m - dx, n - dy, p - dz). Out-of-bounds positions map to zero.
-pub fn run_imshift(
-    input: &Path,
-    output: &Path,
-    dx: f32,
-    dy: f32,
-    dz: f32,
-) -> Result<(), DwError> {
+pub fn run_imshift(input: &Path, output: &Path, dx: f32, dy: f32, dz: f32) -> Result<(), DwError> {
+    validate_shift_params(dx, dy, dz)?;
     let (img, meta) = tiff_io::tiff_read(input)?;
 
     let (m_dim, n_dim, p_dim) = img.dims();
@@ -36,4 +31,26 @@ pub fn run_imshift(
     tiff_io::tiff_write_f32(output, &out, Some(&out_meta))?;
 
     Ok(())
+}
+
+fn validate_shift_params(dx: f32, dy: f32, dz: f32) -> Result<(), DwError> {
+    if !dx.is_finite() || !dy.is_finite() || !dz.is_finite() {
+        return Err(DwError::Config(
+            "shift offsets must be finite values".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shift_offsets_must_be_finite() {
+        assert!(validate_shift_params(0.0, -1.0, 2.5).is_ok());
+        assert!(validate_shift_params(f32::NAN, 0.0, 0.0).is_err());
+        assert!(validate_shift_params(0.0, f32::INFINITY, 0.0).is_err());
+        assert!(validate_shift_params(0.0, 0.0, f32::NEG_INFINITY).is_err());
+    }
 }

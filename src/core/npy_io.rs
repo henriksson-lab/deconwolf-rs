@@ -30,10 +30,15 @@ pub fn npy_read(path: &Path) -> Result<FimImage> {
     reader.read_exact(&mut version)?;
 
     // Read header length
-    let header_len = if version[0] == 1 {
-        reader.read_u16::<LittleEndian>()? as usize
-    } else {
-        reader.read_u32::<LittleEndian>()? as usize
+    let header_len = match version[0] {
+        1 => reader.read_u16::<LittleEndian>()? as usize,
+        2 | 3 => reader.read_u32::<LittleEndian>()? as usize,
+        other => {
+            return Err(DwError::Npy(format!(
+                "Unsupported NPY version: {}.{}",
+                other, version[1]
+            )))
+        }
     };
 
     // Read header
@@ -57,7 +62,7 @@ pub fn npy_read(path: &Path) -> Result<FimImage> {
         }
     };
 
-    let nel = m * n * p;
+    let nel = checked_nel(m, n, p)?;
 
     // Read data based on dtype
     let data = match dtype.as_str() {
@@ -139,19 +144,16 @@ pub fn npy_write(path: &Path, img: &FimImage) -> Result<()> {
     let prefix_len = 6 + 2 + 2; // magic + version + header_len (v1)
     let total = prefix_len + header_dict.len() + 1; // +1 for newline
     let padding = (64 - (total % 64)) % 64;
-    let padded_header = format!(
-        "{}{}{}",
-        header_dict,
-        " ".repeat(padding),
-        "\n"
-    );
+    let padded_header = format!("{}{}{}", header_dict, " ".repeat(padding), "\n");
 
     // Write magic
     writer.write_all(NPY_MAGIC)?;
     // Version 1.0
     writer.write_all(&[1, 0])?;
     // Header length (u16 LE)
-    writer.write_u16::<LittleEndian>(padded_header.len() as u16)?;
+    let header_len = u16::try_from(padded_header.len())
+        .map_err(|_| DwError::Npy("NPY v1 header is too large".into()))?;
+    writer.write_u16::<LittleEndian>(header_len)?;
     // Header
     writer.write_all(padded_header.as_bytes())?;
     // Data
@@ -174,7 +176,7 @@ fn parse_npy_header(header: &str) -> Result<(String, bool, Vec<usize>)> {
     let header = header.trim();
 
     let mut dtype = String::new();
-    let mut fortran_order = false;
+    let mut fortran_order = None;
     let mut shape: Vec<usize> = Vec::new();
 
     // Extract 'descr' value
@@ -194,7 +196,16 @@ fn parse_npy_header(header: &str) -> Result<(String, bool, Vec<usize>)> {
     // Extract 'fortran_order' value
     if let Some(pos) = header.find("'fortran_order'") {
         let rest = &header[pos..];
-        fortran_order = rest.contains("True");
+        if let Some(colon) = rest.find(':') {
+            let after = rest[colon + 1..].trim_start();
+            if after.starts_with("True") {
+                fortran_order = Some(true);
+            } else if after.starts_with("False") {
+                fortran_order = Some(false);
+            } else {
+                return Err(DwError::Npy("Invalid fortran_order in NPY header".into()));
+            }
+        }
     }
 
     // Extract 'shape' value
@@ -206,10 +217,9 @@ fn parse_npy_header(header: &str) -> Result<(String, bool, Vec<usize>)> {
                 for dim in shape_str.split(',') {
                     let dim = dim.trim();
                     if !dim.is_empty() {
-                        shape.push(
-                            dim.parse::<usize>()
-                                .map_err(|_| DwError::Npy(format!("Invalid shape dimension: {}", dim)))?,
-                        );
+                        shape.push(dim.parse::<usize>().map_err(|_| {
+                            DwError::Npy(format!("Invalid shape dimension: {}", dim))
+                        })?);
                     }
                 }
             }
@@ -219,11 +229,24 @@ fn parse_npy_header(header: &str) -> Result<(String, bool, Vec<usize>)> {
     if dtype.is_empty() {
         return Err(DwError::Npy("Missing descr in NPY header".into()));
     }
+    let fortran_order =
+        fortran_order.ok_or_else(|| DwError::Npy("Missing fortran_order in NPY header".into()))?;
     if shape.is_empty() {
         return Err(DwError::Npy("Missing shape in NPY header".into()));
     }
 
     Ok((dtype, fortran_order, shape))
+}
+
+fn checked_nel(m: usize, n: usize, p: usize) -> Result<usize> {
+    m.checked_mul(n)
+        .and_then(|mn| mn.checked_mul(p))
+        .ok_or_else(|| {
+            DwError::InvalidDimensions(format!(
+                "Image dimensions {}x{}x{} overflow addressable memory",
+                m, n, p
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -237,6 +260,21 @@ mod tests {
         assert_eq!(dtype, "<f4");
         assert!(!fortran);
         assert_eq!(shape, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn test_parse_header_rejects_missing_or_invalid_fortran_order() {
+        let missing = "{'descr': '<f4', 'shape': (3, 4), }";
+        assert!(parse_npy_header(missing).is_err());
+
+        let invalid = "{'descr': '<f4', 'fortran_order': Maybe, 'shape': (3, 4), }";
+        assert!(parse_npy_header(invalid).is_err());
+    }
+
+    #[test]
+    fn test_checked_nel_rejects_overflow() {
+        assert_eq!(checked_nel(4, 3, 2).unwrap(), 24);
+        assert!(checked_nel(usize::MAX, 2, 1).is_err());
     }
 
     #[test]

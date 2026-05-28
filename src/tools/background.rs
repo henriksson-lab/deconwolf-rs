@@ -8,14 +8,11 @@ use crate::core::DwError;
 /// Each input is max-projected to 2D (if 3D), then all projections are averaged.
 /// Finally, a Gaussian smoothing with the given `sigma` is applied to produce a
 /// smooth background / vignetting estimate.
-pub fn run_background(
-    output: &Path,
-    inputs: &[PathBuf],
-    sigma: f32,
-) -> Result<(), DwError> {
+pub fn run_background(output: &Path, inputs: &[PathBuf], sigma: f32) -> Result<(), DwError> {
     if inputs.is_empty() {
         return Err(DwError::Config("No input files provided".into()));
     }
+    validate_background_params(sigma)?;
 
     // Read and max-project the first image.
     let (first_img, first_meta) = tiff_io::tiff_read(&inputs[0])?;
@@ -64,4 +61,27 @@ pub fn run_background(
     tiff_io::tiff_write_f32(output, &acc, Some(&out_meta))?;
 
     Ok(())
+}
+
+fn validate_background_params(sigma: f32) -> Result<(), DwError> {
+    if !sigma.is_finite() || sigma < 0.0 {
+        return Err(DwError::Config(
+            "--sigma must be a non-negative finite value".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_sigma_must_be_non_negative_and_finite() {
+        assert!(validate_background_params(0.0).is_ok());
+        assert!(validate_background_params(1.5).is_ok());
+        assert!(validate_background_params(-1.0).is_err());
+        assert!(validate_background_params(f32::NAN).is_err());
+        assert!(validate_background_params(f32::INFINITY).is_err());
+    }
 }

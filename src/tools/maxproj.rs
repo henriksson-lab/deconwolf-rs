@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::core::tiff_io;
-use crate::core::FimImage;
+use crate::core::{DwError, FimImage};
 
 /// Maximum projection modes.
 pub enum MaxProjMode {
@@ -26,8 +26,8 @@ pub fn run_maxproj(
     let result = match mode {
         MaxProjMode::Max => img.max_projection(),
         MaxProjMode::Slice(z) => img.get_plane(z)?,
-        MaxProjMode::Xyz => xyz_collage(&img),
-        MaxProjMode::GradientMagnitude => best_focus_slice(&img),
+        MaxProjMode::Xyz => xyz_collage(&img)?,
+        MaxProjMode::GradientMagnitude => best_focus_slice(&img)?,
     };
 
     let mut out_meta = meta;
@@ -48,8 +48,13 @@ pub fn run_maxproj(
 ///   |  XZ     |     |
 ///   |  (MxP)  |     |
 ///   +---------+-----+
-fn xyz_collage(img: &FimImage) -> FimImage {
+fn xyz_collage(img: &FimImage) -> Result<FimImage, DwError> {
     let (m_dim, n_dim, p_dim) = img.dims();
+    if m_dim == 0 || n_dim == 0 || p_dim == 0 {
+        return Err(DwError::InvalidDimensions(
+            "Cannot build XYZ collage from an empty image".into(),
+        ));
+    }
 
     // XY max projection: M x N
     let xy_proj = img.max_projection();
@@ -85,8 +90,7 @@ fn xyz_collage(img: &FimImage) -> FimImage {
     }
 
     // Assemble collage: width = M + P, height = N + P
-    let out_m = m_dim + p_dim;
-    let out_n = n_dim + p_dim;
+    let (out_m, out_n) = xyz_collage_dims(m_dim, n_dim, p_dim)?;
     let mut out = FimImage::zeros(out_m, out_n, 1);
 
     // Top-left: XY projection (M x N)
@@ -110,18 +114,34 @@ fn xyz_collage(img: &FimImage) -> FimImage {
         }
     }
 
-    out
+    Ok(out)
+}
+
+fn xyz_collage_dims(m: usize, n: usize, p: usize) -> Result<(usize, usize), DwError> {
+    let out_m = m
+        .checked_add(p)
+        .ok_or_else(|| DwError::InvalidDimensions("XYZ collage width overflow".into()))?;
+    let out_n = n
+        .checked_add(p)
+        .ok_or_else(|| DwError::InvalidDimensions("XYZ collage height overflow".into()))?;
+    Ok((out_m, out_n))
 }
 
 /// Find and extract the most in-focus Z-slice using gradient magnitude.
 ///
 /// The slice with the highest mean gradient magnitude is considered the most
 /// in-focus.
-fn best_focus_slice(img: &FimImage) -> FimImage {
+fn best_focus_slice(img: &FimImage) -> Result<FimImage, DwError> {
     let (m_dim, n_dim, p_dim) = img.dims();
 
+    if m_dim == 0 || n_dim == 0 || p_dim == 0 {
+        return Err(DwError::InvalidDimensions(
+            "Cannot select a focus slice from an empty image".into(),
+        ));
+    }
+
     if p_dim <= 1 {
-        return img.clone();
+        return Ok(img.clone());
     }
 
     // Compute gradient magnitude with a small smoothing sigma.
@@ -151,5 +171,33 @@ fn best_focus_slice(img: &FimImage) -> FimImage {
     );
 
     // img.get_plane can't fail here since best_plane < p_dim.
-    img.get_plane(best_plane).expect("valid plane index")
+    img.get_plane(best_plane)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xyz_collage_dims_rejects_overflow() {
+        assert_eq!(xyz_collage_dims(4, 3, 2).unwrap(), (6, 5));
+        assert!(xyz_collage_dims(usize::MAX, 1, 1).is_err());
+        assert!(xyz_collage_dims(1, usize::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn xyz_collage_rejects_empty_axes() {
+        assert!(xyz_collage(&FimImage::zeros(0, 3, 2)).is_err());
+        assert!(xyz_collage(&FimImage::zeros(3, 0, 2)).is_err());
+        assert!(xyz_collage(&FimImage::zeros(3, 2, 0)).is_err());
+    }
+
+    #[test]
+    fn best_focus_slice_rejects_empty_xy_plane() {
+        let img = FimImage::zeros(0, 3, 2);
+        assert!(best_focus_slice(&img).is_err());
+
+        let img = FimImage::zeros(3, 0, 2);
+        assert!(best_focus_slice(&img).is_err());
+    }
 }

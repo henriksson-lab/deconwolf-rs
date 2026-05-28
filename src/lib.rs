@@ -1,5 +1,5 @@
 pub mod core;
-pub mod fft;
 pub mod deconv;
-pub mod tools;
+pub mod fft;
 pub mod gpu;
+pub mod tools;

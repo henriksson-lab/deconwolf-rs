@@ -35,10 +35,11 @@ impl FTab {
     ///
     /// Returns an error if `data.len() != nrow * ncol`.
     pub fn from_data(nrow: usize, ncol: usize, data: Vec<f32>) -> Result<Self> {
-        if data.len() != nrow * ncol {
+        let expected = checked_table_len(nrow, ncol, "FTab::from_data")?;
+        if data.len() != expected {
             return Err(DwError::InvalidDimensions(format!(
                 "FTab::from_data: expected {} elements ({}x{}), got {}",
-                nrow * ncol,
+                expected,
                 nrow,
                 ncol,
                 data.len()
@@ -56,7 +57,11 @@ impl FTab {
     ///
     /// Only the first `min(names.len(), ncol)` names are used.
     pub fn with_colnames(mut self, names: &[&str]) -> Self {
-        self.colnames = names.iter().take(self.ncol).map(|s| s.to_string()).collect();
+        self.colnames = names
+            .iter()
+            .take(self.ncol)
+            .map(|s| s.to_string())
+            .collect();
         self
     }
 
@@ -76,13 +81,19 @@ impl FTab {
 
     /// Get a single element.  Panics on out-of-bounds.
     pub fn get(&self, row: usize, col: usize) -> f32 {
-        assert!(row < self.nrow && col < self.ncol, "FTab::get out of bounds");
+        assert!(
+            row < self.nrow && col < self.ncol,
+            "FTab::get out of bounds"
+        );
         self.data[row * self.ncol + col]
     }
 
     /// Set a single element.  Panics on out-of-bounds.
     pub fn set(&mut self, row: usize, col: usize, val: f32) {
-        assert!(row < self.nrow && col < self.ncol, "FTab::set out of bounds");
+        assert!(
+            row < self.nrow && col < self.ncol,
+            "FTab::set out of bounds"
+        );
         self.data[row * self.ncol + col] = val;
     }
 
@@ -93,8 +104,13 @@ impl FTab {
 
     /// Extract all values in a column as a new `Vec<f32>`.
     pub fn col_data(&self, col: usize) -> Vec<f32> {
-        assert!(col < self.ncol, "FTab::col_data: column index out of bounds");
-        (0..self.nrow).map(|r| self.data[r * self.ncol + col]).collect()
+        assert!(
+            col < self.ncol,
+            "FTab::col_data: column index out of bounds"
+        );
+        (0..self.nrow)
+            .map(|r| self.data[r * self.ncol + col])
+            .collect()
     }
 
     // ------------------------------------------------------------------ //
@@ -144,7 +160,10 @@ impl FTab {
 
     /// Sort rows by the values in the given column.
     pub fn sort_by_col(&mut self, col: usize, descending: bool) {
-        assert!(col < self.ncol, "FTab::sort_by_col: column index out of bounds");
+        assert!(
+            col < self.ncol,
+            "FTab::sort_by_col: column index out of bounds"
+        );
 
         // Build an index array and sort it.
         let mut indices: Vec<usize> = (0..self.nrow).collect();
@@ -173,7 +192,10 @@ impl FTab {
 
     /// Overwrite all values in a column.  Panics if `data.len() != nrow`.
     pub fn set_col_data(&mut self, col: usize, data: &[f32]) {
-        assert!(col < self.ncol, "FTab::set_col_data: column index out of bounds");
+        assert!(
+            col < self.ncol,
+            "FTab::set_col_data: column index out of bounds"
+        );
         assert_eq!(
             data.len(),
             self.nrow,
@@ -193,12 +215,17 @@ impl FTab {
             self.nrow,
             "FTab::insert_col: data length mismatch"
         );
-        let new_ncol = self.ncol + 1;
-        let mut new_data = Vec::with_capacity(self.nrow * new_ncol);
-        for r in 0..self.nrow {
+        let new_ncol = self
+            .ncol
+            .checked_add(1)
+            .expect("FTab::insert_col: column count overflow");
+        let capacity = checked_table_len(self.nrow, new_ncol, "FTab::insert_col")
+            .expect("FTab::insert_col: table size overflow");
+        let mut new_data = Vec::with_capacity(capacity);
+        for (r, &value) in data.iter().enumerate().take(self.nrow) {
             let start = r * self.ncol;
             new_data.extend_from_slice(&self.data[start..start + self.ncol]);
-            new_data.push(data[r]);
+            new_data.push(value);
         }
         self.data = new_data;
         self.ncol = new_ncol;
@@ -214,8 +241,11 @@ impl FTab {
                 self.nrow, other.nrow
             )));
         }
-        let new_ncol = self.ncol + other.ncol;
-        let mut new_data = Vec::with_capacity(self.nrow * new_ncol);
+        let new_ncol = self.ncol.checked_add(other.ncol).ok_or_else(|| {
+            DwError::InvalidDimensions("FTab::concatenate_columns: column count overflow".into())
+        })?;
+        let capacity = checked_table_len(self.nrow, new_ncol, "FTab::concatenate_columns")?;
+        let mut new_data = Vec::with_capacity(capacity);
         for r in 0..self.nrow {
             let s1 = r * self.ncol;
             new_data.extend_from_slice(&self.data[s1..s1 + self.ncol]);
@@ -265,6 +295,9 @@ impl FTab {
         let header = lines
             .next()
             .ok_or_else(|| DwError::InvalidDimensions("FTab: empty file".into()))??;
+        if header.trim().is_empty() {
+            return Err(DwError::InvalidDimensions("FTab: empty header".into()));
+        }
         let colnames: Vec<String> = header.split(delim).map(|s| s.trim().to_string()).collect();
         let ncol = colnames.len();
 
@@ -280,13 +313,16 @@ impl FTab {
             if fields.len() != ncol {
                 return Err(DwError::InvalidDimensions(format!(
                     "FTab: row {} has {} fields, expected {}",
-                    nrow, fields.len(), ncol
+                    nrow,
+                    fields.len(),
+                    ncol
                 )));
             }
             for f in &fields {
-                let val: f32 = f.trim().parse().map_err(|e| {
-                    DwError::InvalidDimensions(format!("FTab: parse error: {}", e))
-                })?;
+                let val: f32 = f
+                    .trim()
+                    .parse()
+                    .map_err(|e| DwError::InvalidDimensions(format!("FTab: parse error: {}", e)))?;
                 data.push(val);
             }
             nrow += 1;
@@ -339,6 +375,15 @@ impl FTab {
     pub fn as_slice(&self) -> &[f32] {
         &self.data
     }
+}
+
+fn checked_table_len(nrow: usize, ncol: usize, context: &str) -> Result<usize> {
+    nrow.checked_mul(ncol).ok_or_else(|| {
+        DwError::InvalidDimensions(format!(
+            "{}: table dimensions {}x{} overflow addressable memory",
+            context, nrow, ncol
+        ))
+    })
 }
 
 // ====================================================================== //
@@ -410,6 +455,14 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_header_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty_header.tsv");
+        std::fs::write(&path, "\n1\t2\n").unwrap();
+        assert!(FTab::from_tsv(&path).is_err());
+    }
+
+    #[test]
     fn test_csv_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.csv");
@@ -456,12 +509,25 @@ mod tests {
     }
 
     #[test]
+    fn concatenate_columns_rejects_column_count_overflow() {
+        let a = FTab {
+            data: Vec::new(),
+            nrow: 0,
+            ncol: usize::MAX,
+            colnames: Vec::new(),
+        };
+        let b = FTab::new(1);
+        assert!(a.concatenate_columns(&b).is_err());
+    }
+
+    #[test]
     fn test_from_data() {
         let t = FTab::from_data(2, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
         assert_eq!(t.get(1, 2), 6.0);
 
         // Wrong length should fail.
         assert!(FTab::from_data(2, 3, vec![1.0, 2.0]).is_err());
+        assert!(FTab::from_data(usize::MAX, 2, Vec::new()).is_err());
     }
 
     #[test]

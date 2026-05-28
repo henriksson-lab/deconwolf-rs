@@ -24,10 +24,7 @@ pub struct TiffMeta {
 impl TiffMeta {
     /// Create ImageJ-compatible image description for a 3D stack.
     pub fn imagej_description(p: usize, z_spacing: Option<f64>) -> String {
-        let mut desc = format!(
-            "ImageJ=1.52r\nimages={}\nslices={}\n",
-            p, p
-        );
+        let mut desc = format!("ImageJ=1.52r\nimages={}\nslices={}\n", p, p);
         if let Some(zs) = z_spacing {
             desc.push_str(&format!("unit=nm\nspacing={}\n", zs));
         }
@@ -78,7 +75,9 @@ fn tiff_read_with_meta(path: &Path) -> Result<(FimImage, TiffMeta)> {
         for line in desc.lines() {
             if let Some(val) = line.strip_prefix("spacing=") {
                 if let Ok(z) = val.trim().parse::<f64>() {
-                    meta.z_spacing = Some(z);
+                    if z.is_finite() && z > 0.0 {
+                        meta.z_spacing = Some(z);
+                    }
                 }
             }
         }
@@ -87,13 +86,21 @@ fn tiff_read_with_meta(path: &Path) -> Result<(FimImage, TiffMeta)> {
     let (width, height) = decoder.dimensions()?;
     let m = width as usize;
     let n = height as usize;
+    let plane_len = checked_plane_len(m, n)?;
 
     // Read all planes
     let mut planes: Vec<Vec<f32>> = Vec::new();
 
     loop {
+        let (plane_width, plane_height) = decoder.dimensions()?;
+        if plane_width != width || plane_height != height {
+            return Err(DwError::InvalidDimensions(format!(
+                "TIFF plane has dimensions {}x{}, expected {}x{}",
+                plane_width, plane_height, width, height,
+            )));
+        }
         let result = decoder.read_image()?;
-        let plane = decode_to_f32(result, m * n)?;
+        let plane = decode_to_f32(result, plane_len)?;
         planes.push(plane);
 
         if !decoder.more_images() {
@@ -103,7 +110,7 @@ fn tiff_read_with_meta(path: &Path) -> Result<(FimImage, TiffMeta)> {
     }
 
     let p = planes.len();
-    let mut data = Vec::with_capacity(m * n * p);
+    let mut data = Vec::with_capacity(checked_stack_len(m, n, p)?);
     for plane in planes {
         data.extend_from_slice(&plane);
     }
@@ -178,6 +185,9 @@ pub fn tiff_write_u16(
     meta: Option<&TiffMeta>,
     scaling: Option<f32>,
 ) -> Result<f32> {
+    let (m, n, p) = img.dims();
+    let (width, height) = tiff_output_dimensions(m, n)?;
+    let plane_len = checked_plane_len(m, n)?;
     let max_val = img.max();
     let scale = scaling.unwrap_or_else(|| {
         if max_val > 0.0 {
@@ -186,14 +196,18 @@ pub fn tiff_write_u16(
             1.0
         }
     });
+    if !scale.is_finite() || scale < 0.0 {
+        return Err(DwError::Config(
+            "TIFF u16 scaling must be a non-negative finite value".into(),
+        ));
+    }
 
     let file = File::create(path)?;
     let writer = BufWriter::new(file);
     let mut encoder = TiffEncoder::new(writer)?;
 
-    let (m, n, p) = img.dims();
     for pp in 0..p {
-        let mut plane = vec![0u16; m * n];
+        let mut plane = vec![0u16; plane_len];
         for nn in 0..n {
             for mm in 0..m {
                 let v = (img.get(mm, nn, pp) * scale).round();
@@ -201,23 +215,26 @@ pub fn tiff_write_u16(
             }
         }
 
-        let mut dir = encoder.new_image::<Gray16>(m as u32, n as u32)?;
+        let mut dir = encoder.new_image::<Gray16>(width, height)?;
 
         // Write metadata on first plane
         if pp == 0 {
             if let Some(meta) = meta {
                 if let Some(ref desc) = meta.image_description {
-                    dir.encoder().write_tag(Tag::ImageDescription, desc.as_str())?;
+                    dir.encoder()
+                        .write_tag(Tag::ImageDescription, desc.as_str())?;
                 } else if p > 1 {
                     let desc = TiffMeta::imagej_description(p, meta.z_spacing);
-                    dir.encoder().write_tag(Tag::ImageDescription, desc.as_str())?;
+                    dir.encoder()
+                        .write_tag(Tag::ImageDescription, desc.as_str())?;
                 }
                 if let Some(ref sw) = meta.software {
                     dir.encoder().write_tag(Tag::Software, sw.as_str())?;
                 }
             } else if p > 1 {
                 let desc = TiffMeta::imagej_description(p, None);
-                dir.encoder().write_tag(Tag::ImageDescription, desc.as_str())?;
+                dir.encoder()
+                    .write_tag(Tag::ImageDescription, desc.as_str())?;
             }
         }
 
@@ -228,40 +245,41 @@ pub fn tiff_write_u16(
 }
 
 /// Write a FimImage as a 32-bit float TIFF.
-pub fn tiff_write_f32(
-    path: &Path,
-    img: &FimImage,
-    meta: Option<&TiffMeta>,
-) -> Result<()> {
+pub fn tiff_write_f32(path: &Path, img: &FimImage, meta: Option<&TiffMeta>) -> Result<()> {
+    let (m, n, p) = img.dims();
+    let (width, height) = tiff_output_dimensions(m, n)?;
+    let plane_len = checked_plane_len(m, n)?;
     let file = File::create(path)?;
     let writer = BufWriter::new(file);
     let mut encoder = TiffEncoder::new(writer)?;
 
-    let (m, n, p) = img.dims();
     for pp in 0..p {
-        let mut plane = vec![0.0f32; m * n];
+        let mut plane = vec![0.0f32; plane_len];
         for nn in 0..n {
             for mm in 0..m {
                 plane[nn * m + mm] = img.get(mm, nn, pp);
             }
         }
 
-        let mut dir = encoder.new_image::<Gray32Float>(m as u32, n as u32)?;
+        let mut dir = encoder.new_image::<Gray32Float>(width, height)?;
 
         if pp == 0 {
             if let Some(meta) = meta {
                 if let Some(ref desc) = meta.image_description {
-                    dir.encoder().write_tag(Tag::ImageDescription, desc.as_str())?;
+                    dir.encoder()
+                        .write_tag(Tag::ImageDescription, desc.as_str())?;
                 } else if p > 1 {
                     let desc = TiffMeta::imagej_description(p, meta.z_spacing);
-                    dir.encoder().write_tag(Tag::ImageDescription, desc.as_str())?;
+                    dir.encoder()
+                        .write_tag(Tag::ImageDescription, desc.as_str())?;
                 }
                 if let Some(ref sw) = meta.software {
                     dir.encoder().write_tag(Tag::Software, sw.as_str())?;
                 }
             } else if p > 1 {
                 let desc = TiffMeta::imagej_description(p, None);
-                dir.encoder().write_tag(Tag::ImageDescription, desc.as_str())?;
+                dir.encoder()
+                    .write_tag(Tag::ImageDescription, desc.as_str())?;
             }
         }
 
@@ -269,6 +287,25 @@ pub fn tiff_write_f32(
     }
 
     Ok(())
+}
+
+fn tiff_output_dimensions(m: usize, n: usize) -> Result<(u32, u32)> {
+    let width = u32::try_from(m)
+        .map_err(|_| DwError::InvalidDimensions(format!("TIFF width {} exceeds u32::MAX", m)))?;
+    let height = u32::try_from(n)
+        .map_err(|_| DwError::InvalidDimensions(format!("TIFF height {} exceeds u32::MAX", n)))?;
+    Ok((width, height))
+}
+
+fn checked_plane_len(m: usize, n: usize) -> Result<usize> {
+    m.checked_mul(n)
+        .ok_or_else(|| DwError::InvalidDimensions("TIFF plane size overflow".into()))
+}
+
+fn checked_stack_len(m: usize, n: usize, p: usize) -> Result<usize> {
+    checked_plane_len(m, n)?
+        .checked_mul(p)
+        .ok_or_else(|| DwError::InvalidDimensions("TIFF stack size overflow".into()))
 }
 
 /// Get image dimensions from a TIFF file without loading data.
@@ -281,11 +318,73 @@ pub fn tiff_get_size(path: &Path) -> Result<(usize, usize, usize)> {
     let m = width as usize;
     let n = height as usize;
 
-    let mut p = 1;
+    let mut p: usize = 1;
     while decoder.more_images() {
         decoder.next_image()?;
-        p += 1;
+        let (plane_width, plane_height) = decoder.dimensions()?;
+        if plane_width != width || plane_height != height {
+            return Err(DwError::InvalidDimensions(format!(
+                "TIFF plane has dimensions {}x{}, expected {}x{}",
+                plane_width, plane_height, width, height,
+            )));
+        }
+        p = p
+            .checked_add(1)
+            .ok_or_else(|| DwError::InvalidDimensions("TIFF plane count overflow".into()))?;
     }
 
     Ok((m, n, p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tiff_output_dimensions_reject_oversized_images() {
+        assert_eq!(tiff_output_dimensions(10, 20).unwrap(), (10, 20));
+        assert!(tiff_output_dimensions(u32::MAX as usize + 1, 20).is_err());
+        assert!(tiff_output_dimensions(10, u32::MAX as usize + 1).is_err());
+    }
+
+    #[test]
+    fn tiff_size_helpers_reject_overflow() {
+        assert_eq!(checked_plane_len(4, 5).unwrap(), 20);
+        assert_eq!(checked_stack_len(4, 5, 3).unwrap(), 60);
+        assert!(checked_plane_len(usize::MAX, 2).is_err());
+        assert!(checked_stack_len(usize::MAX, 2, 1).is_err());
+        assert!(checked_stack_len(usize::MAX / 2 + 1, 2, 2).is_err());
+    }
+
+    #[test]
+    fn tiff_write_u16_rejects_invalid_scaling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let img = FimImage::zeros(1, 1, 1);
+        assert!(tiff_write_u16(&path, &img, None, Some(f32::NAN)).is_err());
+        assert!(tiff_write_u16(&path, &img, None, Some(-1.0)).is_err());
+    }
+
+    #[test]
+    fn tiff_read_rejects_mixed_plane_dimensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.tif");
+        let file = File::create(&path).unwrap();
+        let writer = BufWriter::new(file);
+        let mut encoder = TiffEncoder::new(writer).unwrap();
+
+        encoder
+            .new_image::<Gray16>(2, 2)
+            .unwrap()
+            .write_data(&[1u16; 4])
+            .unwrap();
+        encoder
+            .new_image::<Gray16>(3, 2)
+            .unwrap()
+            .write_data(&[1u16; 6])
+            .unwrap();
+
+        assert!(tiff_read(&path).is_err());
+        assert!(tiff_get_size(&path).is_err());
+    }
 }

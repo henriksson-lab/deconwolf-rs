@@ -17,6 +17,8 @@ pub fn run_sparse(
     lambda_s: f64,
     n_iter: usize,
 ) -> Result<(), DwError> {
+    validate_sparse_params(lambda, lambda_s)?;
+
     let (img, meta) = tiff_io::tiff_read(input)?;
     let (m_dim, n_dim, p_dim) = img.dims();
 
@@ -90,4 +92,32 @@ pub fn run_sparse(
     tiff_io::tiff_write_f32(output, &u, Some(&out_meta))?;
 
     Ok(())
+}
+
+fn validate_sparse_params(lambda: f64, lambda_s: f64) -> Result<(), DwError> {
+    if !lambda.is_finite() || lambda < 0.0 {
+        return Err(DwError::Config(
+            "lambda must be a non-negative finite value".into(),
+        ));
+    }
+    if !lambda_s.is_finite() || lambda_s < 0.0 {
+        return Err(DwError::Config(
+            "lambda_s must be a non-negative finite value".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_params_reject_invalid_values() {
+        assert!(validate_sparse_params(0.0, 0.0).is_ok());
+        assert!(validate_sparse_params(0.1, 0.2).is_ok());
+        assert!(validate_sparse_params(-0.1, 0.2).is_err());
+        assert!(validate_sparse_params(0.1, -0.2).is_err());
+        assert!(validate_sparse_params(f64::NAN, 0.2).is_err());
+    }
 }

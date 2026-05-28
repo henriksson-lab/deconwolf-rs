@@ -19,13 +19,22 @@ pub fn default_sigmas() -> Vec<f32> {
 ///   3. Laplacian of Gaussian (LoG) response
 ///
 /// Returns an FTab with `nrow = M * N` and `ncol = 3 * sigmas.len()`.
-fn extract_features_2d(image: &FimImage, sigmas: &[f32]) -> FTab {
+fn extract_features_2d(image: &FimImage, sigmas: &[f32]) -> Result<FTab, DwError> {
+    validate_sigmas(sigmas)?;
     let m = image.m();
     let n = image.n();
-    let n_pixels = m * n;
-    let n_features = 3 * sigmas.len();
+    let n_pixels = m
+        .checked_mul(n)
+        .ok_or_else(|| DwError::InvalidDimensions("Feature image size overflow".into()))?;
+    let n_features = sigmas
+        .len()
+        .checked_mul(3)
+        .ok_or_else(|| DwError::InvalidDimensions("Feature count overflow".into()))?;
+    let n_values = n_pixels
+        .checked_mul(n_features)
+        .ok_or_else(|| DwError::InvalidDimensions("Feature table size overflow".into()))?;
 
-    let mut data = vec![0.0f32; n_pixels * n_features];
+    let mut data = vec![0.0f32; n_values];
 
     for (si, &sigma) in sigmas.iter().enumerate() {
         // Feature 1: Gaussian smoothed
@@ -59,9 +68,7 @@ fn extract_features_2d(image: &FimImage, sigmas: &[f32]) -> FTab {
     }
     let colname_refs: Vec<&str> = colnames.iter().map(|s| s.as_str()).collect();
 
-    FTab::from_data(n_pixels, n_features, data)
-        .expect("feature table dimensions must match")
-        .with_colnames(&colname_refs)
+    Ok(FTab::from_data(n_pixels, n_features, data)?.with_colnames(&colname_refs))
 }
 
 /// Train a random forest model for nuclei pixel classification.
@@ -80,20 +87,20 @@ pub fn run_nuclei_fit(
     n_trees: usize,
     sigmas: &[f32],
 ) -> Result<(), DwError> {
+    validate_sigmas(sigmas)?;
+
     // Load image and max-project to 2D
     let (image, _meta) = tiff_read(image_path)?;
     let proj = image.max_projection();
 
     // Extract features
-    let features = extract_features_2d(&proj, sigmas);
+    let features = extract_features_2d(&proj, sigmas)?;
 
     // Load annotation image as class labels
     let (annot_img, _) = tiff_read(annotation_path)?;
     let annot_slice = annot_img.as_slice();
 
-    let m = proj.m();
-    let n = proj.n();
-    let n_pixels = m * n;
+    let n_pixels = features.nrow();
 
     if annot_slice.len() != n_pixels {
         return Err(DwError::InvalidDimensions(format!(
@@ -108,8 +115,14 @@ pub fn run_nuclei_fit(
     let mut train_features: Vec<f64> = Vec::new();
     let mut train_labels: Vec<u32> = Vec::new();
 
-    for px in 0..n_pixels {
-        let label = annot_slice[px].round() as u32;
+    for (px, &value) in annot_slice.iter().enumerate().take(n_pixels) {
+        if !value.is_finite() || value < 0.0 || value.round() > u32::MAX as f32 {
+            return Err(DwError::Config(format!(
+                "Invalid annotation value {} at pixel {}",
+                value, px
+            )));
+        }
+        let label = value.round() as u32;
         if label > 0 {
             // Convert feature row from f32 to f64
             for col in 0..n_features {
@@ -165,28 +178,32 @@ pub fn run_nuclei_classify(
     output_path: &Path,
     sigmas: &[f32],
 ) -> Result<(), DwError> {
+    validate_sigmas(sigmas)?;
+
     // Load image and max-project to 2D
     let (image, _meta) = tiff_read(image_path)?;
     let proj = image.max_projection();
 
     // Extract features
-    let features = extract_features_2d(&proj, sigmas);
+    let features = extract_features_2d(&proj, sigmas)?;
 
     let m = proj.m();
     let n = proj.n();
-    let n_pixels = m * n;
+    let n_pixels = features.nrow();
     let n_features = features.ncol();
 
     // Convert features to f64 for prediction
-    let mut features_f64 = vec![0.0f64; n_pixels * n_features];
-    for px in 0..n_pixels {
-        for col in 0..n_features {
-            features_f64[px * n_features + col] = features.get(px, col) as f64;
-        }
-    }
+    let features_f64 = features_as_f64(&features)?;
 
     // Load model
     let forest = RandomForest::load(model_path)?;
+    if forest.n_features() != n_features {
+        return Err(DwError::InvalidDimensions(format!(
+            "Model expects {} features, but current sigma settings produce {}",
+            forest.n_features(),
+            n_features
+        )));
+    }
 
     println!(
         "Classifying {} pixels with {} features",
@@ -194,7 +211,7 @@ pub fn run_nuclei_classify(
     );
 
     // Predict class for each pixel
-    let predictions = forest.predict(&features_f64, n_pixels);
+    let predictions = forest.predict_checked(&features_f64, n_pixels)?;
 
     // Build output image: class labels stored as f32 (add 1 to restore 1-based labels)
     let out_data: Vec<f32> = predictions.iter().map(|&c| (c + 1) as f32).collect();
@@ -205,4 +222,62 @@ pub fn run_nuclei_classify(
     println!("Classified image saved to {}", output_path.display());
 
     Ok(())
+}
+
+fn validate_sigmas(sigmas: &[f32]) -> Result<(), DwError> {
+    if sigmas.is_empty() {
+        return Err(DwError::Config("At least one sigma is required".into()));
+    }
+    for &sigma in sigmas {
+        if !sigma.is_finite() || sigma <= 0.0 {
+            return Err(DwError::Config(
+                "Nuclei sigmas must be positive finite values".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn features_as_f64(features: &FTab) -> Result<Vec<f64>, DwError> {
+    let n_pixels = features.nrow();
+    let n_features = features.ncol();
+    let n_values = n_pixels
+        .checked_mul(n_features)
+        .ok_or_else(|| DwError::InvalidDimensions("Feature table size overflow".into()))?;
+    let mut out = vec![0.0f64; n_values];
+    for px in 0..n_pixels {
+        for col in 0..n_features {
+            out[px * n_features + col] = features.get(px, col) as f64;
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nuclei_sigmas_must_be_non_empty_positive_and_finite() {
+        assert!(validate_sigmas(&[1.0, 2.0]).is_ok());
+        assert!(validate_sigmas(&[]).is_err());
+        assert!(validate_sigmas(&[0.0]).is_err());
+        assert!(validate_sigmas(&[f32::NAN]).is_err());
+    }
+
+    #[test]
+    fn extract_features_rejects_invalid_sigmas() {
+        let image = FimImage::zeros(2, 2, 1);
+        assert!(extract_features_2d(&image, &[]).is_err());
+        assert!(extract_features_2d(&image, &[0.0]).is_err());
+    }
+
+    #[test]
+    fn features_as_f64_preserves_row_major_order() {
+        let features = FTab::from_data(2, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+        assert_eq!(
+            features_as_f64(&features).unwrap(),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
+    }
 }

@@ -3,10 +3,10 @@
 //! Port of the C `trafo` library. Supports training, prediction,
 //! feature importance, and binary save/load.
 
-use rayon::prelude::*;
 use rand::prelude::*;
 use rand::rngs::StdRng;
-use std::io::{Read, Write, BufReader, BufWriter};
+use rayon::prelude::*;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use super::error::{DwError, Result};
@@ -164,6 +164,7 @@ fn impurity(class_counts: &[u32], total: u32, use_entropy: bool) -> f64 {
 ///
 /// Returns `(feature_idx, threshold, impurity_reduction)` or `None` if no
 /// valid split exists.
+#[allow(clippy::too_many_arguments)]
 fn find_best_split(
     features: &[f64],
     labels: &[u32],
@@ -277,6 +278,7 @@ fn all_same_class(labels: &[u32], indices: &[usize]) -> bool {
 
 /// Recursively build a decision tree, appending nodes to `nodes`.
 /// Returns the index of the root node of this subtree.
+#[allow(clippy::too_many_arguments)]
 fn build_tree_recursive(
     nodes: &mut Vec<TreeNode>,
     features: &[f64],
@@ -374,6 +376,7 @@ fn build_tree_recursive(
 }
 
 /// Build a single decision tree from the provided sample indices.
+#[allow(clippy::too_many_arguments)]
 fn build_tree(
     features: &[f64],
     labels: &[u32],
@@ -404,6 +407,11 @@ fn build_tree(
 // ---------------------------------------------------------------------------
 
 impl RandomForest {
+    /// Number of features expected by the model.
+    pub fn n_features(&self) -> usize {
+        self.n_features
+    }
+
     /// Train a random forest.
     ///
     /// `features` is a row-major `n_samples x n_features` slice.
@@ -415,7 +423,8 @@ impl RandomForest {
         n_features: usize,
         settings: &TrafoSettings,
     ) -> Result<Self> {
-        if features.len() != n_samples * n_features {
+        let expected_features = checked_feature_len(n_samples, n_features)?;
+        if features.len() != expected_features {
             return Err(DwError::Config(format!(
                 "features length {} != n_samples({}) * n_features({})",
                 features.len(),
@@ -430,6 +439,19 @@ impl RandomForest {
         }
         if n_samples == 0 || n_features == 0 {
             return Err(DwError::Config("empty training set".into()));
+        }
+        if settings.n_trees == 0 {
+            return Err(DwError::Config("n_trees must be greater than 0".into()));
+        }
+        if settings.min_samples_leaf == 0 {
+            return Err(DwError::Config(
+                "min_samples_leaf must be greater than 0".into(),
+            ));
+        }
+        if !settings.sample_fraction.is_finite() || settings.sample_fraction <= 0.0 {
+            return Err(DwError::Config(
+                "sample_fraction must be a positive finite value".into(),
+            ));
         }
 
         let n_classes = labels.iter().copied().max().unwrap_or(0) + 1;
@@ -457,8 +479,7 @@ impl RandomForest {
                 // Random feature subset.
                 let mut all_feats: Vec<usize> = (0..n_features).collect();
                 all_feats.shuffle(&mut rng);
-                let feature_subset: Vec<usize> =
-                    all_feats.into_iter().take(max_feat).collect();
+                let feature_subset: Vec<usize> = all_feats.into_iter().take(max_feat).collect();
 
                 build_tree(
                     features,
@@ -482,10 +503,25 @@ impl RandomForest {
 
     /// Predict class labels for `n_samples` samples (row-major features).
     pub fn predict(&self, features: &[f64], n_samples: usize) -> Vec<u32> {
+        self.predict_checked(features, n_samples)
+            .expect("features length must match n_samples * model n_features")
+    }
+
+    /// Predict class labels, returning an error instead of panicking on invalid feature shape.
+    pub fn predict_checked(&self, features: &[f64], n_samples: usize) -> Result<Vec<u32>> {
         let nf = self.n_features;
         let nc = self.n_classes as usize;
+        let expected_features = checked_feature_len(n_samples, nf)?;
+        if features.len() != expected_features {
+            return Err(DwError::Config(format!(
+                "features length {} != n_samples({}) * n_features({})",
+                features.len(),
+                n_samples,
+                nf
+            )));
+        }
 
-        (0..n_samples)
+        Ok((0..n_samples)
             .into_par_iter()
             .map(|s| {
                 let sample = &features[s * nf..(s + 1) * nf];
@@ -504,7 +540,7 @@ impl RandomForest {
                     .map(|(cls, _)| cls as u32)
                     .unwrap_or(0)
             })
-            .collect()
+            .collect())
     }
 
     /// Compute feature importance as the fraction of splits using each feature.
@@ -532,15 +568,21 @@ impl RandomForest {
     pub fn save(&self, path: &Path) -> Result<()> {
         let file = std::fs::File::create(path)?;
         let mut w = BufWriter::new(file);
+        let n_features = u32::try_from(self.n_features)
+            .map_err(|_| DwError::Config("too many features to save".into()))?;
+        let n_trees = u32::try_from(self.trees.len())
+            .map_err(|_| DwError::Config("too many trees to save".into()))?;
 
         w.write_all(&TRAFO_MAGIC.to_le_bytes())?;
         w.write_all(&TRAFO_VERSION.to_le_bytes())?;
-        w.write_all(&(self.n_features as u32).to_le_bytes())?;
+        w.write_all(&n_features.to_le_bytes())?;
         w.write_all(&self.n_classes.to_le_bytes())?;
-        w.write_all(&(self.trees.len() as u32).to_le_bytes())?;
+        w.write_all(&n_trees.to_le_bytes())?;
 
         for tree in &self.trees {
-            w.write_all(&(tree.nodes.len() as u32).to_le_bytes())?;
+            let n_nodes = u32::try_from(tree.nodes.len())
+                .map_err(|_| DwError::Config("too many tree nodes to save".into()))?;
+            w.write_all(&n_nodes.to_le_bytes())?;
             for node in &tree.nodes {
                 w.write_all(&node.feature.to_le_bytes())?;
                 w.write_all(&node.threshold.to_le_bytes())?;
@@ -583,11 +625,17 @@ impl RandomForest {
 
         r.read_exact(&mut buf4)?;
         let n_trees = u32::from_le_bytes(buf4) as usize;
+        if n_features == 0 || n_classes == 0 || n_trees == 0 {
+            return Err(DwError::Config("invalid trafo model dimensions".into()));
+        }
 
         let mut trees = Vec::with_capacity(n_trees);
         for _ in 0..n_trees {
             r.read_exact(&mut buf4)?;
             let n_nodes = u32::from_le_bytes(buf4) as usize;
+            if n_nodes == 0 {
+                return Err(DwError::Config("invalid trafo tree with zero nodes".into()));
+            }
 
             let mut nodes = Vec::with_capacity(n_nodes);
             for _ in 0..n_nodes {
@@ -610,6 +658,7 @@ impl RandomForest {
                     right,
                 });
             }
+            validate_tree_nodes(&nodes, n_features, n_classes)?;
             trees.push(DecisionTree { nodes });
         }
 
@@ -619,6 +668,55 @@ impl RandomForest {
             n_classes,
         })
     }
+}
+
+fn validate_tree_nodes(nodes: &[TreeNode], n_features: usize, n_classes: u32) -> Result<()> {
+    if nodes.is_empty() {
+        return Err(DwError::Config("invalid trafo tree with zero nodes".into()));
+    }
+    for (idx, node) in nodes.iter().enumerate() {
+        if node.is_leaf() {
+            if node.class_label() >= n_classes {
+                return Err(DwError::Config(format!(
+                    "invalid trafo leaf class {} at node {}",
+                    node.class_label(),
+                    idx
+                )));
+            }
+        } else {
+            let feature = usize::try_from(node.feature).map_err(|_| {
+                DwError::Config(format!("invalid negative feature at node {}", idx))
+            })?;
+            if feature >= n_features {
+                return Err(DwError::Config(format!(
+                    "invalid feature {} at node {} for {} features",
+                    feature, idx, n_features
+                )));
+            }
+            if !node.threshold.is_finite() {
+                return Err(DwError::Config(format!(
+                    "invalid non-finite threshold at node {}",
+                    idx
+                )));
+            }
+            if node.left as usize >= nodes.len() || node.right as usize >= nodes.len() {
+                return Err(DwError::Config(format!(
+                    "invalid child index at node {}",
+                    idx
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn checked_feature_len(n_samples: usize, n_features: usize) -> Result<usize> {
+    n_samples.checked_mul(n_features).ok_or_else(|| {
+        DwError::Config(format!(
+            "n_samples({}) * n_features({}) overflows addressable memory",
+            n_samples, n_features
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -772,5 +870,83 @@ mod tests {
         // Balanced binary.
         assert!((gini_impurity(&[5, 5], 10) - 0.5).abs() < 1e-9);
         assert!((entropy(&[5, 5], 10) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_fit_rejects_invalid_settings() {
+        let features = vec![0.0, 1.0];
+        let labels = vec![0, 1];
+
+        let mut settings = TrafoSettings {
+            n_trees: 0,
+            ..Default::default()
+        };
+        assert!(RandomForest::fit(&features, &labels, 2, 1, &settings).is_err());
+
+        settings = TrafoSettings {
+            min_samples_leaf: 0,
+            ..Default::default()
+        };
+        assert!(RandomForest::fit(&features, &labels, 2, 1, &settings).is_err());
+
+        settings = TrafoSettings {
+            sample_fraction: f64::NAN,
+            ..Default::default()
+        };
+        assert!(RandomForest::fit(&features, &labels, 2, 1, &settings).is_err());
+
+        assert!(RandomForest::fit(&[], &[], usize::MAX, 2, &Default::default()).is_err());
+    }
+
+    #[test]
+    fn test_predict_checked_rejects_invalid_feature_shape() {
+        let features = vec![0.0, 1.0];
+        let labels = vec![0, 1];
+        let forest = RandomForest::fit(&features, &labels, 2, 1, &Default::default()).unwrap();
+
+        assert!(forest.predict_checked(&features, 2).is_ok());
+        assert!(forest.predict_checked(&features[..1], 2).is_err());
+        assert!(forest.predict_checked(&[], usize::MAX).is_err());
+    }
+
+    #[test]
+    fn test_validate_tree_nodes_rejects_malformed_nodes() {
+        let valid = vec![
+            TreeNode {
+                feature: 0,
+                threshold: 0.5,
+                left: 1,
+                right: 2,
+            },
+            TreeNode {
+                feature: -1,
+                threshold: 0.0,
+                left: 0,
+                right: 0,
+            },
+            TreeNode {
+                feature: -1,
+                threshold: 0.0,
+                left: 1,
+                right: 0,
+            },
+        ];
+        assert!(validate_tree_nodes(&valid, 1, 2).is_ok());
+
+        let mut invalid_feature = valid.clone();
+        invalid_feature[0].feature = 2;
+        assert!(validate_tree_nodes(&invalid_feature, 1, 2).is_err());
+
+        let mut invalid_child = valid.clone();
+        invalid_child[0].right = 99;
+        assert!(validate_tree_nodes(&invalid_child, 1, 2).is_err());
+
+        let mut invalid_class = valid.clone();
+        invalid_class[1].left = 2;
+        assert!(validate_tree_nodes(&invalid_class, 1, 2).is_err());
+
+        let mut invalid_threshold = valid;
+        invalid_threshold[0].threshold = f32::NAN;
+        assert!(validate_tree_nodes(&invalid_threshold, 1, 2).is_err());
     }
 }

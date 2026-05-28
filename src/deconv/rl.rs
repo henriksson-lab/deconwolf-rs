@@ -51,7 +51,7 @@ impl DeconvMethod for RlMethod {
             opts.abs_error,
         );
 
-        while iter.next() {
+        while iter.advance() {
             let error = rl_iteration(
                 &mut x,
                 image,
@@ -59,7 +59,12 @@ impl DeconvMethod for RlMethod {
                 weights.as_ref(),
                 fft,
                 opts,
-                m, n, p, wm, wn, wp,
+                m,
+                n,
+                p,
+                wm,
+                wn,
+                wp,
             )?;
             iter.set_error(error);
 
@@ -82,6 +87,7 @@ fn initial_guess(image: &FimImage, opts: &DwOpts, wm: usize, wn: usize, wp: usiz
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rl_iteration<B: FftBackend>(
     x: &mut FimImage,
     image: &FimImage,
@@ -89,8 +95,12 @@ fn rl_iteration<B: FftBackend>(
     weights: Option<&FimImage>,
     fft: &FftContext<B>,
     opts: &DwOpts,
-    m: usize, n: usize, p: usize,
-    wm: usize, wn: usize, wp: usize,
+    m: usize,
+    n: usize,
+    p: usize,
+    wm: usize,
+    wn: usize,
+    wp: usize,
 ) -> Result<f64, crate::core::DwError> {
     let x_fft = fft
         .forward(x.as_slice())
@@ -112,7 +122,11 @@ fn rl_iteration<B: FftBackend>(
                     let idx_y = pp * wn * wm + nn * wm + mm;
                     let idx_im = pp * n * m + nn * m + mm;
                     let denom = y_slice[idx_y];
-                    y_slice[idx_y] = if denom > 0.0 { im_slice[idx_im] / denom } else { 0.0 };
+                    y_slice[idx_y] = if denom > 0.0 {
+                        im_slice[idx_im] / denom
+                    } else {
+                        0.0
+                    };
                 }
             }
         }
@@ -148,7 +162,14 @@ fn rl_iteration<B: FftBackend>(
     Ok(error)
 }
 
-fn compute_error(image: &FimImage, y: &FimImage, m: usize, n: usize, p: usize, metric: Metric) -> f64 {
+fn compute_error(
+    image: &FimImage,
+    y: &FimImage,
+    m: usize,
+    n: usize,
+    p: usize,
+    metric: Metric,
+) -> f64 {
     let im = image.as_slice();
     let y_slice = y.as_slice();
     let (wm, wn, _) = y.dims();
@@ -160,7 +181,8 @@ fn compute_error(image: &FimImage, y: &FimImage, m: usize, n: usize, p: usize, m
             for pp in 0..p {
                 for nn in 0..n {
                     for mm in 0..m {
-                        let d = im[pp * n * m + nn * m + mm] as f64 - y_slice[pp * wn * wm + nn * wm + mm] as f64;
+                        let d = im[pp * n * m + nn * m + mm] as f64
+                            - y_slice[pp * wn * wm + nn * wm + mm] as f64;
                         sum += d * d;
                         count += 1;
                     }
