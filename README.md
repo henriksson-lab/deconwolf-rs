@@ -3,6 +3,10 @@
 A Rust translation of [deconwolf](https://github.com/elgw/deconwolf), a software for
 3D deconvolution of fluorescent wide-field microscopy images.
 
+Original benchmark baseline: the local `deconwolf/` source tree is commit
+`0d6f6c7c941e` (`git describe`: `v0.4.5-267-g0d6f6c7`).
+
+* 2026-08-01: CI added
 * 2026-05-28: New audit. All kinds of checks added. Further testing on real data is needed
 
 
@@ -38,6 +42,20 @@ cargo build --release
 ```
 
 The binary is at `target/release/dw`.
+
+## Performance vs deconwolf C
+
+Latest captured benchmark run: 2026-07-14, Rust commit `368b43e`, bundled C reference `v0.4.5-267-g0d6f6c7` (`0d6f6c7c941e`). The C reference was built in `/tmp/deconwolf_c_build` with `-DENABLE_GPU=OFF`; the Rust binary was `target/release/dw`.
+
+The benchmark used three serial repeats per implementation on the bundled `demodata/dapi_001.tif` image plus a generated 31x31x31 widefield PSF. Aggregate speedup is the arithmetic mean of the median paired summaries: **3.32x** (C wall time / Rust wall time; higher is better). Average RSS ratio: **1.48x** (Rust RSS / C RSS; lower is better). Raw rows are tracked in `benchmarks/deconwolf-rs.tsv` in the presentation repository.
+
+| Workload | C median s | Rust median s | Speedup | C RSS KiB | Rust RSS KiB | RSS ratio |
+|---|---:|---:|---:|---:|---:|---:|
+| `deconvolve_rl_iter1_threads1` | 0.760 | 0.600 | 1.27x | 44324 | 115964 | 2.62x |
+| `maxproj_demo` | 0.020 | 0.020 | 1.00x | 6216 | 10560 | 1.70x |
+| `psf_widefield_31` | 0.100 | 0.010 | 10.00x | 10560 | 4800 | 0.45x |
+| `tif2npy_demo` | 0.020 | 0.020 | 1.00x | 9280 | 10560 | 1.14x |
+
 
 ## Subcommands
 
